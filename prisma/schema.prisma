@@ -9,3 +9,18 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+model Product {
+  id          String   @id @default(uuid()) @db.Uuid
+  sku         String   @unique
+  name        String
+  description String?
+  unitAmount  Int      @map("unit_amount")
+  currency    String   @default("usd") @db.Char(3)
+  stock       Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("products")
+}
