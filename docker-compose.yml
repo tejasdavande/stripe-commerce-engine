@@ -1,0 +1,25 @@
+services:
+  api:
+    build: .
+    ports:
+      - '3000:3000'
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://commerce:commerce@postgres:5432/commerce
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: commerce
+      POSTGRES_PASSWORD: commerce
+      POSTGRES_DB: commerce
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

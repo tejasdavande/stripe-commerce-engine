@@ -1,0 +1,11 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "cjs"
+  // generate also runs in the docker build before tsconfig.json is copied, and without it prisma defaults to .ts imports
+  importFileExtension = ""
+}
+
+datasource db {
+  provider = "postgresql"
+}
