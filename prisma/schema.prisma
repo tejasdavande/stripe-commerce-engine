@@ -22,5 +22,47 @@ model Product {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
+  orderItems OrderItem[]
+
   @@map("products")
+}
+
+enum OrderStatus {
+  pending_payment
+  paid
+  fulfilled
+  cancelled
+
+  @@map("order_status")
+}
+
+model Order {
+  id          String      @id @default(uuid()) @db.Uuid
+  email       String
+  status      OrderStatus @default(pending_payment)
+  currency    String      @db.Char(3)
+  totalAmount Int         @map("total_amount")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  items OrderItem[]
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id         String @id @default(uuid()) @db.Uuid
+  orderId    String @map("order_id") @db.Uuid
+  productId  String @map("product_id") @db.Uuid
+  sku        String
+  name       String
+  unitAmount Int    @map("unit_amount")
+  quantity   Int
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([orderId, productId])
+  @@index([productId])
+  @@map("order_items")
 }
