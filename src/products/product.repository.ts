@@ -24,6 +24,26 @@ export class ProductRepository {
     return await this.prisma.product.findFirst({ where: { id, active: true } });
   }
 
+  async findActiveByIds(
+    ids: string[],
+    db: Prisma.TransactionClient = this.prisma
+  ): Promise<Product[]> {
+    return await db.product.findMany({ where: { id: { in: ids }, active: true } });
+  }
+
+  async reserveStock(
+    id: string,
+    quantity: number,
+    db: Prisma.TransactionClient = this.prisma
+  ): Promise<boolean> {
+    const { count } = await db.product.updateMany({
+      where: { id, active: true, stock: { gte: quantity } },
+      data: { stock: { decrement: quantity } },
+    });
+
+    return count === 1;
+  }
+
   async upsertBySku(data: Prisma.ProductCreateInput): Promise<Product> {
     return await this.prisma.product.upsert({
       where: { sku: data.sku },

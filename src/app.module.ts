@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { validate } from './config/env.validator';
 import { HealthModule } from './health/health.module';
+import { OrderModule } from './orders/order.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductModule } from './products/product.module';
 
@@ -11,6 +12,7 @@ import { ProductModule } from './products/product.module';
     PrismaModule,
     HealthModule,
     ProductModule,
+    OrderModule,
   ],
 })
 export class AppModule {}
