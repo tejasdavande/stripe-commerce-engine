@@ -1,6 +1,8 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Res } from '@nestjs/common';
+import { Response } from 'express';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderResponseDto } from './dto/order-response.dto';
+import { IdempotencyKey } from './idempotency-key.decorator';
 import { OrderService } from './order.service';
 
 @Controller('orders')
@@ -8,8 +10,18 @@ export class OrderController {
   constructor(private readonly orderService: OrderService) {}
 
   @Post()
-  async create(@Body() dto: CreateOrderDto): Promise<OrderResponseDto> {
-    return await this.orderService.create(dto);
+  async create(
+    @Body() dto: CreateOrderDto,
+    @IdempotencyKey() idempotencyKey: string | undefined,
+    @Res({ passthrough: true }) res: Response
+  ): Promise<OrderResponseDto> {
+    const { order, replayed } = await this.orderService.create(dto, idempotencyKey);
+
+    if (replayed) {
+      res.setHeader('Idempotent-Replayed', 'true');
+    }
+
+    return order;
   }
 
   @Get(':id')

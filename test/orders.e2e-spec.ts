@@ -141,6 +141,71 @@ describe('Orders (e2e)', () => {
       .expect(400);
   });
 
+  describe('Idempotency-Key', () => {
+    const postWithKey = (key: string, items: { productId: string; quantity: number }[]) =>
+      postOrder(items).set('Idempotency-Key', key);
+
+    it('replays the first order for a retry and reserves stock only once', async () => {
+      const product = await createProduct();
+      const key = randomUUID();
+
+      const first = await postWithKey(key, [{ productId: product.id, quantity: 2 }]).expect(201);
+      const retry = await postWithKey(key, [{ productId: product.id, quantity: 2 }]).expect(201);
+
+      expect(first.headers['idempotent-replayed']).toBeUndefined();
+      expect(retry.headers['idempotent-replayed']).toBe('true');
+      expect(retry.body).toEqual(first.body);
+      expect(await stockOf(product.id)).toBe(3);
+    });
+
+    it('creates one order when the same key arrives concurrently', async () => {
+      const product = await createProduct();
+      const key = randomUUID();
+
+      const results = await Promise.all(
+        Array.from({ length: 10 }, () => postWithKey(key, [{ productId: product.id, quantity: 1 }]))
+      );
+
+      expect(results.map((res) => res.status)).toEqual(Array(10).fill(201));
+      expect(new Set(results.map((res) => res.body.id)).size).toBe(1);
+      expect(results.filter((res) => res.headers['idempotent-replayed'])).toHaveLength(9);
+      expect(await stockOf(product.id)).toBe(4);
+    });
+
+    it('returns 422 when the key is reused with a different body', async () => {
+      const product = await createProduct();
+      const key = randomUUID();
+
+      await postWithKey(key, [{ productId: product.id, quantity: 1 }]).expect(201);
+      const res = await postWithKey(key, [{ productId: product.id, quantity: 2 }]).expect(422);
+
+      expect(res.body.message).toBe(
+        'this Idempotency-Key was already used with a different request'
+      );
+      expect(await stockOf(product.id)).toBe(4);
+    });
+
+    it('does not keep the key when the order fails, so the client can retry', async () => {
+      const product = await createProduct({ stock: 1 });
+      const key = randomUUID();
+
+      await postWithKey(key, [{ productId: product.id, quantity: 2 }]).expect(409);
+      await prisma.product.update({ where: { id: product.id }, data: { stock: 5 } });
+      const retry = await postWithKey(key, [{ productId: product.id, quantity: 2 }]).expect(201);
+
+      expect(retry.headers['idempotent-replayed']).toBeUndefined();
+      expect(await stockOf(product.id)).toBe(3);
+    });
+
+    it('rejects an empty or overlong key', async () => {
+      const product = await createProduct();
+
+      await postWithKey('', [{ productId: product.id, quantity: 1 }]).expect(400);
+      await postWithKey('k'.repeat(256), [{ productId: product.id, quantity: 1 }]).expect(400);
+      expect(await stockOf(product.id)).toBe(5);
+    });
+  });
+
   it('returns 404 for an unknown order and 400 for a malformed id', async () => {
     await request(app.getHttpServer()).get(`/orders/${randomUUID()}`).expect(404);
     await request(app.getHttpServer()).get('/orders/not-a-uuid').expect(400);

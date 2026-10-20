@@ -1,7 +1,8 @@
 import { ConflictException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
-import { Product } from '../generated/prisma/client';
+import { Prisma, Product } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductRepository } from '../products/product.repository';
+import { IdempotencyKeyRepository } from './idempotency-key.repository';
 import { OrderRepository, OrderWithItems } from './order.repository';
 import { OrderService } from './order.service';
 
@@ -26,6 +27,7 @@ describe('OrderService', () => {
 
   let productRepository: jest.Mocked<Pick<ProductRepository, 'findActiveByIds' | 'reserveStock'>>;
   let orderRepository: jest.Mocked<Pick<OrderRepository, 'create' | 'findById'>>;
+  let idempotencyKeyRepository: jest.Mocked<Pick<IdempotencyKeyRepository, 'create' | 'findByKey'>>;
   let service: OrderService;
 
   beforeEach(() => {
@@ -51,18 +53,23 @@ describe('OrderService', () => {
       })),
       findById: jest.fn().mockResolvedValue(null),
     };
+    idempotencyKeyRepository = {
+      create: jest.fn().mockResolvedValue(undefined),
+      findByKey: jest.fn().mockResolvedValue(null),
+    };
     const prisma = {
       $transaction: jest.fn((fn: (client: unknown) => Promise<unknown>) => fn(tx)),
     };
     service = new OrderService(
       prisma as unknown as PrismaService,
       productRepository as unknown as ProductRepository,
-      orderRepository as unknown as OrderRepository
+      orderRepository as unknown as OrderRepository,
+      idempotencyKeyRepository as unknown as IdempotencyKeyRepository
     );
   });
 
   it('merges duplicate lines, reserves in product id order and prices from the catalog', async () => {
-    const order = await service.create({
+    const { order, replayed } = await service.create({
       email: 'buyer@example.com',
       items: [
         { productId: idB, quantity: 1 },
@@ -81,6 +88,8 @@ describe('OrderService', () => {
       tx
     );
     expect(order.items.map((item) => item.lineAmount)).toEqual([2000, 7500]);
+    expect(replayed).toBe(false);
+    expect(idempotencyKeyRepository.create).not.toHaveBeenCalled();
   });
 
   it('throws 404 for unknown or inactive products before reserving anything', async () => {
@@ -129,6 +138,100 @@ describe('OrderService', () => {
       })
     ).rejects.toThrow(new ConflictException(`not enough stock for SKU-2b2b`));
     expect(orderRepository.create).not.toHaveBeenCalled();
+  });
+
+  describe('with an idempotency key', () => {
+    const dto = { email: 'buyer@example.com', items: [{ productId: idA, quantity: 1 }] };
+    const uniqueViolation = () =>
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: 'test',
+      });
+
+    it('stores the key before reserving stock and links it to the order', async () => {
+      const callOrder: string[] = [];
+      idempotencyKeyRepository.create.mockImplementation(async () => {
+        callOrder.push('key');
+      });
+      productRepository.reserveStock.mockImplementation(async () => {
+        callOrder.push('reserve');
+        return true;
+      });
+
+      const { replayed } = await service.create(dto, 'key-1');
+
+      expect(replayed).toBe(false);
+      expect(idempotencyKeyRepository.create).toHaveBeenCalledWith(
+        'key-1',
+        expect.stringMatching(/^[0-9a-f]{64}$/),
+        tx
+      );
+      expect(callOrder).toEqual(['key', 'reserve']);
+      expect(orderRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ idempotencyKey: { connect: { key: 'key-1' } } }),
+        tx
+      );
+    });
+
+    it('replays the stored order when the key was already used for the same request', async () => {
+      await service.create(dto, 'key-1');
+      const requestHash = idempotencyKeyRepository.create.mock.calls[0][1];
+      idempotencyKeyRepository.create.mockRejectedValue(uniqueViolation());
+      idempotencyKeyRepository.findByKey.mockResolvedValue({
+        key: 'key-1',
+        requestHash,
+        orderId: 'order-1',
+        createdAt: new Date(),
+      });
+      orderRepository.findById.mockResolvedValue({
+        id: 'order-1',
+        email: dto.email,
+        status: 'paid',
+        currency: 'usd',
+        totalAmount: 1000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        items: [],
+      });
+      productRepository.reserveStock.mockClear();
+
+      const { order, replayed } = await service.create(dto, 'key-1');
+
+      expect(replayed).toBe(true);
+      expect(order).toMatchObject({ id: 'order-1', status: 'paid' });
+      expect(productRepository.reserveStock).not.toHaveBeenCalled();
+    });
+
+    it('throws 422 when the key was used with a different request', async () => {
+      idempotencyKeyRepository.create.mockRejectedValue(uniqueViolation());
+      idempotencyKeyRepository.findByKey.mockResolvedValue({
+        key: 'key-1',
+        requestHash: 'a'.repeat(64),
+        orderId: 'order-1',
+        createdAt: new Date(),
+      });
+
+      await expect(service.create(dto, 'key-1')).rejects.toThrow(UnprocessableEntityException);
+    });
+
+    it('rethrows errors that are not a key conflict', async () => {
+      productRepository.reserveStock.mockResolvedValue(false);
+
+      await expect(service.create(dto, 'key-1')).rejects.toThrow(ConflictException);
+      expect(idempotencyKeyRepository.findByKey).not.toHaveBeenCalled();
+    });
+
+    it('hashes the same request the same way and a different one differently', async () => {
+      await service.create(dto, 'key-1');
+      await service.create(dto, 'key-2');
+      await service.create({ ...dto, items: [{ productId: idA, quantity: 2 }] }, 'key-3');
+
+      const [first, second, third] = idempotencyKeyRepository.create.mock.calls.map(
+        (call) => call[1]
+      );
+      expect(first).toBe(second);
+      expect(third).not.toBe(first);
+    });
   });
 
   it('throws 404 for an unknown order', async () => {
