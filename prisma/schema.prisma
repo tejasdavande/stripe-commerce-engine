@@ -45,7 +45,8 @@ model Order {
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
-  items OrderItem[]
+  items          OrderItem[]
+  idempotencyKey IdempotencyKey?
 
   @@map("orders")
 }
@@ -65,4 +66,15 @@ model OrderItem {
   @@unique([orderId, productId])
   @@index([productId])
   @@map("order_items")
+}
+
+model IdempotencyKey {
+  key         String   @id @db.VarChar(255)
+  requestHash String   @map("request_hash") @db.Char(64)
+  orderId     String?  @unique @map("order_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("idempotency_keys")
 }
