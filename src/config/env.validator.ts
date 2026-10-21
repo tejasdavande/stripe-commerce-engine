@@ -1,5 +1,5 @@
 import { plainToInstance } from 'class-transformer';
-import { IsNumber, IsString, validateSync } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, validateSync } from 'class-validator';
 
 class EnvironmentVariables {
   @IsNumber()
@@ -7,6 +7,14 @@ class EnvironmentVariables {
 
   @IsString()
   DATABASE_URL: string;
+
+  @IsString()
+  @IsNotEmpty()
+  STRIPE_SECRET_KEY: string;
+
+  @IsOptional()
+  @IsUrl({ require_tld: false, require_protocol: true, protocols: ['http', 'https'] })
+  STRIPE_API_URL?: string;
 }
 
 export function validate(config: Record<string, unknown>) {

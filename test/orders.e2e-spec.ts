@@ -76,9 +76,20 @@ describe('Orders (e2e)', () => {
     );
     expect(await stockOf(tee.id)).toBe(8);
     expect(await stockOf(mug.id)).toBe(0);
+  });
+
+  it('creates a stripe payment intent and returns its client secret only on creation', async () => {
+    const product = await createProduct({ unitAmount: 2500 });
+
+    const res = await postOrder([{ productId: product.id, quantity: 2 }]).expect(201);
+
+    expect(res.body.clientSecret).toMatch(/^pi_\w+_secret_\w+$/);
+    const stored = await prisma.order.findUniqueOrThrow({ where: { id: res.body.id } });
+    expect(stored.paymentIntentId).toMatch(/^pi_\w+$/);
 
     const fetched = await request(app.getHttpServer()).get(`/orders/${res.body.id}`).expect(200);
-    expect(fetched.body).toEqual(res.body);
+    expect(fetched.body.clientSecret).toBeUndefined();
+    expect(fetched.body).toEqual({ ...res.body, clientSecret: undefined });
   });
 
   it('rolls back earlier reservations when a later line is out of stock', async () => {
@@ -155,6 +166,7 @@ describe('Orders (e2e)', () => {
       expect(first.headers['idempotent-replayed']).toBeUndefined();
       expect(retry.headers['idempotent-replayed']).toBe('true');
       expect(retry.body).toEqual(first.body);
+      expect(retry.body.clientSecret).toBeDefined();
       expect(await stockOf(product.id)).toBe(3);
     });
 

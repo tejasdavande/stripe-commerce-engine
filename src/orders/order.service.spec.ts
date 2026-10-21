@@ -1,5 +1,7 @@
 import { ConflictException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { BadGatewayException } from '@nestjs/common';
 import { Prisma, Product } from '../generated/prisma/client';
+import { PaymentService } from '../payments/payment.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductRepository } from '../products/product.repository';
 import { IdempotencyKeyRepository } from './idempotency-key.repository';
@@ -26,8 +28,11 @@ describe('OrderService', () => {
   const tx = { tx: true };
 
   let productRepository: jest.Mocked<Pick<ProductRepository, 'findActiveByIds' | 'reserveStock'>>;
-  let orderRepository: jest.Mocked<Pick<OrderRepository, 'create' | 'findById'>>;
+  let orderRepository: jest.Mocked<
+    Pick<OrderRepository, 'create' | 'findById' | 'setPaymentIntent'>
+  >;
   let idempotencyKeyRepository: jest.Mocked<Pick<IdempotencyKeyRepository, 'create' | 'findByKey'>>;
+  let paymentService: jest.Mocked<Pick<PaymentService, 'createIntent' | 'getClientSecret'>>;
   let service: OrderService;
 
   beforeEach(() => {
@@ -44,6 +49,7 @@ describe('OrderService', () => {
         status: 'pending_payment',
         currency: data.currency,
         totalAmount: data.totalAmount,
+        paymentIntentId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
         items: data.items.create.map((item: { product: { connect: { id: string } } }) => ({
@@ -52,10 +58,15 @@ describe('OrderService', () => {
         })),
       })),
       findById: jest.fn().mockResolvedValue(null),
+      setPaymentIntent: jest.fn().mockResolvedValue(undefined),
     };
     idempotencyKeyRepository = {
       create: jest.fn().mockResolvedValue(undefined),
       findByKey: jest.fn().mockResolvedValue(null),
+    };
+    paymentService = {
+      createIntent: jest.fn().mockResolvedValue({ id: 'pi_new', clientSecret: 'pi_new_secret' }),
+      getClientSecret: jest.fn().mockResolvedValue('pi_old_secret'),
     };
     const prisma = {
       $transaction: jest.fn((fn: (client: unknown) => Promise<unknown>) => fn(tx)),
@@ -64,7 +75,8 @@ describe('OrderService', () => {
       prisma as unknown as PrismaService,
       productRepository as unknown as ProductRepository,
       orderRepository as unknown as OrderRepository,
-      idempotencyKeyRepository as unknown as IdempotencyKeyRepository
+      idempotencyKeyRepository as unknown as IdempotencyKeyRepository,
+      paymentService as unknown as PaymentService
     );
   });
 
@@ -232,6 +244,90 @@ describe('OrderService', () => {
       );
       expect(first).toBe(second);
       expect(third).not.toBe(first);
+    });
+  });
+
+  describe('payment', () => {
+    const dto = { email: 'buyer@example.com', items: [{ productId: idA, quantity: 1 }] };
+    const stored = (overrides: Partial<OrderWithItems>): OrderWithItems => ({
+      id: 'order-1',
+      email: dto.email,
+      status: 'pending_payment',
+      currency: 'usd',
+      totalAmount: 1000,
+      paymentIntentId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      items: [],
+      ...overrides,
+    });
+
+    const replayWith = async (order: OrderWithItems) => {
+      await service.create(dto, 'key-1');
+      const requestHash = idempotencyKeyRepository.create.mock.calls[0][1];
+      idempotencyKeyRepository.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: 'test',
+        })
+      );
+      idempotencyKeyRepository.findByKey.mockResolvedValue({
+        key: 'key-1',
+        requestHash,
+        orderId: order.id,
+        createdAt: new Date(),
+      });
+      orderRepository.findById.mockResolvedValue(order);
+      paymentService.createIntent.mockClear();
+      orderRepository.setPaymentIntent.mockClear();
+
+      return await service.create(dto, 'key-1');
+    };
+
+    it('creates a payment intent for the order total and returns its client secret', async () => {
+      const { order } = await service.create(dto);
+
+      expect(paymentService.createIntent).toHaveBeenCalledWith({
+        orderId: 'order-1',
+        email: dto.email,
+        currency: 'usd',
+        amount: 1000,
+      });
+      expect(orderRepository.setPaymentIntent).toHaveBeenCalledWith('order-1', 'pi_new');
+      expect(order.clientSecret).toBe('pi_new_secret');
+    });
+
+    it('keeps the order and fails with 502 when stripe is down', async () => {
+      paymentService.createIntent.mockRejectedValue(new BadGatewayException());
+
+      await expect(service.create(dto, 'key-1')).rejects.toThrow(BadGatewayException);
+      expect(orderRepository.create).toHaveBeenCalled();
+      expect(orderRepository.setPaymentIntent).not.toHaveBeenCalled();
+    });
+
+    it('reuses the stored intent when replaying', async () => {
+      const { order, replayed } = await replayWith(stored({ paymentIntentId: 'pi_old' }));
+
+      expect(replayed).toBe(true);
+      expect(paymentService.getClientSecret).toHaveBeenCalledWith('pi_old');
+      expect(paymentService.createIntent).not.toHaveBeenCalled();
+      expect(order.clientSecret).toBe('pi_old_secret');
+    });
+
+    it('creates the intent on replay when the first attempt never got one', async () => {
+      const { order } = await replayWith(stored({ paymentIntentId: null }));
+
+      expect(paymentService.createIntent).toHaveBeenCalledTimes(1);
+      expect(orderRepository.setPaymentIntent).toHaveBeenCalledWith('order-1', 'pi_new');
+      expect(order.clientSecret).toBe('pi_new_secret');
+    });
+
+    it('returns no client secret once the order is no longer awaiting payment', async () => {
+      const { order } = await replayWith(stored({ status: 'paid', paymentIntentId: 'pi_old' }));
+
+      expect(paymentService.getClientSecret).not.toHaveBeenCalled();
+      expect(paymentService.createIntent).not.toHaveBeenCalled();
+      expect(order.clientSecret).toBeUndefined();
     });
   });
 

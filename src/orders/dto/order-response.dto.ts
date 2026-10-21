@@ -17,9 +17,10 @@ export class OrderResponseDto {
   currency: string;
   totalAmount: number;
   items: OrderItemResponseDto[];
+  clientSecret?: string;
   createdAt: Date;
 
-  static fromModel(order: OrderWithItems): OrderResponseDto {
+  static fromModel(order: OrderWithItems, clientSecret?: string): OrderResponseDto {
     return {
       id: order.id,
       email: order.email,
@@ -34,6 +35,7 @@ export class OrderResponseDto {
         quantity: item.quantity,
         lineAmount: item.unitAmount * item.quantity,
       })),
+      clientSecret,
       createdAt: order.createdAt,
     };
   }

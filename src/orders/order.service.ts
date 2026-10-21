@@ -5,14 +5,15 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { createHash } from 'crypto';
-import { Prisma, Product } from '../generated/prisma/client';
+import { OrderStatus, Prisma, Product } from '../generated/prisma/client';
+import { PaymentService } from '../payments/payment.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductRepository } from '../products/product.repository';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderLineDto } from './dto/order-line.dto';
 import { OrderResponseDto } from './dto/order-response.dto';
 import { IdempotencyKeyRepository } from './idempotency-key.repository';
-import { OrderRepository } from './order.repository';
+import { OrderRepository, OrderWithItems } from './order.repository';
 
 export interface CreateOrderResult {
   order: OrderResponseDto;
@@ -25,38 +26,58 @@ export class OrderService {
     private readonly prisma: PrismaService,
     private readonly productRepository: ProductRepository,
     private readonly orderRepository: OrderRepository,
-    private readonly idempotencyKeyRepository: IdempotencyKeyRepository
+    private readonly idempotencyKeyRepository: IdempotencyKeyRepository,
+    private readonly paymentService: PaymentService
   ) {}
 
   async create(dto: CreateOrderDto, idempotencyKey?: string): Promise<CreateOrderResult> {
     if (!idempotencyKey) {
-      return { order: await this.placeOrder(dto), replayed: false };
+      return { order: await this.checkout(await this.placeOrder(dto)), replayed: false };
     }
 
     const requestHash = this.hashRequest(dto);
+    let order: OrderWithItems;
 
     try {
-      return {
-        order: await this.placeOrder(dto, { key: idempotencyKey, requestHash }),
-        replayed: false,
-      };
+      order = await this.placeOrder(dto, { key: idempotencyKey, requestHash });
     } catch (error) {
       if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
         throw error;
       }
+
+      const stored = await this.replay(idempotencyKey, requestHash);
+      return { order: await this.checkout(stored), replayed: true };
     }
 
-    return { order: await this.replay(idempotencyKey, requestHash), replayed: true };
+    return { order: await this.checkout(order), replayed: false };
   }
 
   async getById(id: string): Promise<OrderResponseDto> {
-    const order = await this.orderRepository.findById(id);
+    return OrderResponseDto.fromModel(await this.findOrThrow(id));
+  }
 
-    if (!order) {
-      throw new NotFoundException('order not found');
+  // runs after the order transaction commits, so no product rows stay locked during the stripe call.
+  // if stripe fails the order stays pending_payment without an intent, and a retry with the same
+  // Idempotency-Key replays the order and creates the intent then
+  private async checkout(order: OrderWithItems): Promise<OrderResponseDto> {
+    if (order.status !== OrderStatus.pending_payment) {
+      return OrderResponseDto.fromModel(order);
     }
 
-    return OrderResponseDto.fromModel(order);
+    if (order.paymentIntentId) {
+      const clientSecret = await this.paymentService.getClientSecret(order.paymentIntentId);
+      return OrderResponseDto.fromModel(order, clientSecret);
+    }
+
+    const intent = await this.paymentService.createIntent({
+      orderId: order.id,
+      email: order.email,
+      currency: order.currency,
+      amount: order.totalAmount,
+    });
+    await this.orderRepository.setPaymentIntent(order.id, intent.id);
+
+    return OrderResponseDto.fromModel(order, intent.clientSecret);
   }
 
   // the key row goes in first, so a concurrent request with the same key blocks on its primary key
@@ -64,10 +85,10 @@ export class OrderService {
   private async placeOrder(
     { email, items }: CreateOrderDto,
     idempotency?: { key: string; requestHash: string }
-  ): Promise<OrderResponseDto> {
+  ): Promise<OrderWithItems> {
     const requested = this.mergeLines(items);
 
-    const order = await this.prisma.$transaction(async (tx) => {
+    return await this.prisma.$transaction(async (tx) => {
       if (idempotency) {
         await this.idempotencyKeyRepository.create(idempotency.key, idempotency.requestHash, tx);
       }
@@ -125,11 +146,9 @@ export class OrderService {
         tx
       );
     });
-
-    return OrderResponseDto.fromModel(order);
   }
 
-  private async replay(key: string, requestHash: string): Promise<OrderResponseDto> {
+  private async replay(key: string, requestHash: string): Promise<OrderWithItems> {
     const stored = await this.idempotencyKeyRepository.findByKey(key);
 
     if (!stored?.orderId) {
@@ -142,7 +161,17 @@ export class OrderService {
       );
     }
 
-    return await this.getById(stored.orderId);
+    return await this.findOrThrow(stored.orderId);
+  }
+
+  private async findOrThrow(id: string): Promise<OrderWithItems> {
+    const order = await this.orderRepository.findById(id);
+
+    if (!order) {
+      throw new NotFoundException('order not found');
+    }
+
+    return order;
   }
 
   private hashRequest({ email, items }: CreateOrderDto): string {

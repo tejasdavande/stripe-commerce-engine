@@ -20,4 +20,8 @@ export class OrderRepository {
   async findById(id: string): Promise<OrderWithItems | null> {
     return await this.prisma.order.findUnique({ where: { id }, include: withItems });
   }
+
+  async setPaymentIntent(id: string, paymentIntentId: string): Promise<void> {
+    await this.prisma.order.update({ where: { id }, data: { paymentIntentId } });
+  }
 }

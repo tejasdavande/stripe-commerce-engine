@@ -2,7 +2,7 @@
 
 Payments and order microservice built with NestJS, PostgreSQL (Prisma) and Stripe. The hard parts of taking money are the focus: checkout that's safe to retry, Stripe webhooks that can arrive twice or out of order, an explicit order state machine, and order events published to RabbitMQ for other services.
 
-Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, and order creation with stock reservation and idempotency keys are in. Stripe payments come next.
+Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, and a Stripe PaymentIntent per order are in. Stripe webhooks and the order state machine come next.
 
 ## Catalog
 
@@ -33,6 +33,16 @@ A checkout request can time out after the server has already created the order, 
 
 The key row is inserted first, in the same transaction as the order. If two requests with the same key arrive at once, the second one's insert waits on the primary key until the first transaction ends. If the first committed, the second gets a unique violation, rolls back and replays the stored order. If the first rolled back, the second goes ahead as a fresh request. The e2e suite sends 10 concurrent requests with one key and expects one order, one stock reservation and nine replays.
 
+## Payments
+
+Every new order gets a Stripe PaymentIntent for its total, and `POST /orders` returns its `clientSecret`. The client confirms the payment with Stripe.js (Payment Element), so card details never reach this service. The intent carries the order id in its metadata, and the order stores the intent id so webhooks can find it later.
+
+The intent is created after the order transaction commits, not inside it. Product rows stay locked until commit, so calling Stripe from inside the transaction would make every other checkout for the same product wait on Stripe's response time.
+
+The trade-off is that Stripe can fail after the order exists. In that case `POST /orders` returns `502`, and the order stays `pending_payment` with its stock reserved but no intent. A retry with the same `Idempotency-Key` replays the order and creates the intent then. Each intent is created with the Stripe idempotency key `order-<order id>`, so two retries racing each other still get the same intent from Stripe. A replay of an order that already has an intent fetches its client secret again, and a replay of an order that's no longer awaiting payment returns no secret. `GET /orders/:id` never returns the secret.
+
+The SDK retries network errors twice and gives up after 10 seconds. Locally and in CI the app talks to [stripe-mock](https://github.com/stripe/stripe-mock) via `STRIPE_API_URL`, so no real keys are needed. To use Stripe test mode, set your own `sk_test_` key and remove `STRIPE_API_URL`.
+
 There's no auth in this service. It's meant to sit behind a gateway, and order ids are random UUIDs.
 
 ## Tech stack
@@ -46,14 +56,14 @@ NestJS 11, TypeScript, PostgreSQL 16, Prisma 7 (with the `pg` driver adapter), S
 | GET | `/health` | `200` when Postgres answers, `503` otherwise |
 | GET | `/products?page=&limit=` | active products, newest first; `limit` up to 100 (default 20) |
 | GET | `/products/:id` | one active product; `404` if it doesn't exist or is inactive, `400` for a malformed id |
-| POST | `/orders` | create an order and reserve stock; optional `Idempotency-Key` header; `404` unknown product, `409` not enough stock, `422` mixed currencies or a reused key with a different body |
+| POST | `/orders` | create an order, reserve stock and return a Stripe `clientSecret`; optional `Idempotency-Key` header; `404` unknown product, `409` not enough stock, `422` mixed currencies or a reused key with a different body, `502` Stripe unavailable (retry with the same key) |
 | GET | `/orders/:id` | one order with its items; `404` if it doesn't exist |
 
 ## Running locally
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres
+docker compose up -d postgres stripe-mock
 npm install
 npm run migrate:deploy
 npm run seed
@@ -70,15 +80,15 @@ Or run everything in containers with `docker compose up --build`, after applying
 npm test
 ```
 
-The e2e suite boots the real app against Postgres:
+The e2e suite boots the real app against Postgres and stripe-mock:
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres stripe-mock
 npm run migrate:deploy
 npm run test:e2e
 ```
 
-CI runs lint, a Prettier check, the build, and both suites, with Postgres as a service container.
+CI runs lint, a Prettier check, the build, and both suites, with Postgres and stripe-mock as service containers.
 
 ## License
 

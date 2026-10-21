@@ -23,9 +23,15 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      stripe-mock:
+        image: stripe/stripe-mock:v0.206.0
+        ports:
+          - 12111:12111
     env:
       PORT: 3000
       DATABASE_URL: postgresql://commerce:commerce@localhost:5432/commerce
+      STRIPE_SECRET_KEY: sk_test_123
+      STRIPE_API_URL: http://localhost:12111
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

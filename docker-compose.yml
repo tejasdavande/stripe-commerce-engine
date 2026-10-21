@@ -7,8 +7,10 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql://commerce:commerce@postgres:5432/commerce
+      STRIPE_API_URL: http://stripe-mock:12111
     depends_on:
       - postgres
+      - stripe-mock
 
   postgres:
     image: postgres:16-alpine
@@ -20,6 +22,11 @@ services:
       - '5432:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
+
+  stripe-mock:
+    image: stripe/stripe-mock:v0.206.0
+    ports:
+      - '12111:12111'
 
 volumes:
   pgdata:
