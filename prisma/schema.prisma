@@ -37,13 +37,14 @@ enum OrderStatus {
 }
 
 model Order {
-  id          String      @id @default(uuid()) @db.Uuid
-  email       String
-  status      OrderStatus @default(pending_payment)
-  currency    String      @db.Char(3)
-  totalAmount Int         @map("total_amount")
-  createdAt   DateTime    @default(now()) @map("created_at")
-  updatedAt   DateTime    @updatedAt @map("updated_at")
+  id              String      @id @default(uuid()) @db.Uuid
+  email           String
+  status          OrderStatus @default(pending_payment)
+  currency        String      @db.Char(3)
+  totalAmount     Int         @map("total_amount")
+  paymentIntentId String?     @unique @map("payment_intent_id") @db.VarChar(255)
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
 
   items          OrderItem[]
   idempotencyKey IdempotencyKey?

@@ -189,6 +189,7 @@ describe('OrderService', () => {
         status: 'paid',
         currency: 'usd',
         totalAmount: 1000,
+        paymentIntentId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
         items: [],
@@ -245,6 +246,7 @@ describe('OrderService', () => {
       status: 'pending_payment',
       currency: 'usd',
       totalAmount: 5000,
+      paymentIntentId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
       items: [
