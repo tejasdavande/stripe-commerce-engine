@@ -79,3 +79,11 @@ model IdempotencyKey {
 
   @@map("idempotency_keys")
 }
+
+model StripeEvent {
+  id         String   @id @db.VarChar(255)
+  type       String   @db.VarChar(255)
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@map("stripe_events")
+}
