@@ -25,6 +25,6 @@ import { PaymentService } from './payment.service';
     },
     PaymentService,
   ],
-  exports: [PaymentService],
+  exports: [Stripe, PaymentService],
 })
 export class PaymentModule {}

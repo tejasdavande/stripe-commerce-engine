@@ -1,18 +1,21 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { createHash } from 'crypto';
-import { OrderStatus, Prisma, Product } from '../generated/prisma/client';
+import { Order, OrderStatus, Prisma, Product } from '../generated/prisma/client';
 import { PaymentService } from '../payments/payment.service';
+import { isUniqueViolation } from '../prisma/is-unique-violation';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductRepository } from '../products/product.repository';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderLineDto } from './dto/order-line.dto';
 import { OrderResponseDto } from './dto/order-response.dto';
 import { IdempotencyKeyRepository } from './idempotency-key.repository';
+import { canTransition } from './order-transitions';
 import { OrderRepository, OrderWithItems } from './order.repository';
 
 export interface CreateOrderResult {
@@ -20,8 +23,16 @@ export interface CreateOrderResult {
   replayed: boolean;
 }
 
+export interface ReceivedPayment {
+  paymentIntentId: string;
+  amount: number;
+  currency: string;
+}
+
 @Injectable()
 export class OrderService {
+  private readonly logger = new Logger(OrderService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly productRepository: ProductRepository,
@@ -41,7 +52,7 @@ export class OrderService {
     try {
       order = await this.placeOrder(dto, { key: idempotencyKey, requestHash });
     } catch (error) {
-      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
+      if (!isUniqueViolation(error)) {
         throw error;
       }
 
@@ -54,6 +65,48 @@ export class OrderService {
 
   async getById(id: string): Promise<OrderResponseDto> {
     return OrderResponseDto.fromModel(await this.findOrThrow(id));
+  }
+
+  async markPaid(
+    { paymentIntentId, amount, currency }: ReceivedPayment,
+    db: Prisma.TransactionClient
+  ): Promise<void> {
+    const order = await this.orderRepository.findByPaymentIntent(paymentIntentId, db);
+
+    if (!order) {
+      this.logger.warn(`payment intent ${paymentIntentId} succeeded but matches no order`);
+      return;
+    }
+
+    if (order.totalAmount !== amount || order.currency !== currency) {
+      this.logger.error(
+        `order ${order.id} expected ${order.totalAmount} ${order.currency} but intent ${paymentIntentId} received ${amount} ${currency}`
+      );
+      return;
+    }
+
+    await this.transition(order, OrderStatus.paid, db);
+  }
+
+  // a webhook can't fix an illegal transition by retrying, so it's logged and acknowledged.
+  // TODO: a payment that lands on a cancelled order needs a refund
+  private async transition(
+    order: Order,
+    to: OrderStatus,
+    db: Prisma.TransactionClient
+  ): Promise<void> {
+    if (order.status === to) {
+      return;
+    }
+
+    if (!canTransition(order.status, to)) {
+      this.logger.error(`order ${order.id} can't go from ${order.status} to ${to}`);
+      return;
+    }
+
+    if (!(await this.orderRepository.transition(order.id, order.status, to, db))) {
+      throw new ConflictException(`order ${order.id} changed status concurrently`);
+    }
   }
 
   // runs after the order transaction commits, so no product rows stay locked during the stripe call.

@@ -10,5 +10,6 @@ import { OrderService } from './order.service';
   imports: [ProductModule, PaymentModule],
   controllers: [OrderController],
   providers: [OrderRepository, IdempotencyKeyRepository, OrderService],
+  exports: [OrderService],
 })
 export class OrderModule {}

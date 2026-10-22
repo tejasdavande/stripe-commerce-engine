@@ -2,7 +2,7 @@
 
 Payments and order microservice built with NestJS, PostgreSQL (Prisma) and Stripe. The hard parts of taking money are the focus: checkout that's safe to retry, Stripe webhooks that can arrive twice or out of order, an explicit order state machine, and order events published to RabbitMQ for other services.
 
-Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, and a Stripe PaymentIntent per order are in. Stripe webhooks and the order state machine come next.
+Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, a Stripe PaymentIntent per order, and signed, deduplicated Stripe webhooks that mark orders paid are in. Cancellation with stock release and RabbitMQ order events come next.
 
 ## Catalog
 
@@ -43,6 +43,25 @@ The trade-off is that Stripe can fail after the order exists. In that case `POST
 
 The SDK retries network errors twice and gives up after 10 seconds. Locally and in CI the app talks to [stripe-mock](https://github.com/stripe/stripe-mock) via `STRIPE_API_URL`, so no real keys are needed. To use Stripe test mode, set your own `sk_test_` key and remove `STRIPE_API_URL`.
 
+## Webhooks
+
+The client confirming a payment with Stripe.js doesn't prove anything to the server, so an order only becomes `paid` when Stripe says so. Stripe calls `POST /webhooks/stripe`, and the handler:
+
+1. Verifies the `Stripe-Signature` header against the raw request body with `STRIPE_WEBHOOK_SECRET`. The app is created with `rawBody: true` because the signature covers the exact bytes Stripe sent, and re-serialized JSON wouldn't match. A missing, forged or tampered signature, or one older than Stripe's 5-minute tolerance, gives `400`.
+2. Inserts the event id into `stripe_events` and applies the event in the same transaction. Stripe delivers at least once, so the same event can arrive twice, even at the same time. A redelivery that races the first one waits on the primary key, then hits a unique violation and is acknowledged without being applied again. If applying the event fails, the event row rolls back too, the endpoint returns an error, and Stripe retries later.
+
+Order status follows an explicit state machine:
+
+```
+pending_payment ──> paid ──> fulfilled
+       │
+       └──> cancelled
+```
+
+`payment_intent.succeeded` moves the order from `pending_payment` to `paid` with a conditional update (`WHERE status = 'pending_payment'`). Before that, the amount and currency received are checked against the order. A mismatch, an unknown intent or an illegal transition (say, a payment landing on a cancelled order) is logged and acknowledged, because redelivering the event wouldn't change the outcome. Refunding a payment that lands on a cancelled order is still to do. `payment_intent.payment_failed` leaves the order `pending_payment`, because the buyer can retry on the same intent with another card. Other event types are recorded and ignored.
+
+To try it against real Stripe test mode, run `stripe listen --forward-to localhost:3000/webhooks/stripe` and put the `whsec_` secret it prints into `STRIPE_WEBHOOK_SECRET`. The e2e suite signs its own events with the test secret.
+
 There's no auth in this service. It's meant to sit behind a gateway, and order ids are random UUIDs.
 
 ## Tech stack
@@ -58,6 +77,7 @@ NestJS 11, TypeScript, PostgreSQL 16, Prisma 7 (with the `pg` driver adapter), S
 | GET | `/products/:id` | one active product; `404` if it doesn't exist or is inactive, `400` for a malformed id |
 | POST | `/orders` | create an order, reserve stock and return a Stripe `clientSecret`; optional `Idempotency-Key` header; `404` unknown product, `409` not enough stock, `422` mixed currencies or a reused key with a different body, `502` Stripe unavailable (retry with the same key) |
 | GET | `/orders/:id` | one order with its items; `404` if it doesn't exist |
+| POST | `/webhooks/stripe` | Stripe webhook receiver; `400` for a missing or invalid signature, `200` once the event is applied or was already seen |
 
 ## Running locally
 

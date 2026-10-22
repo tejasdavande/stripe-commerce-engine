@@ -6,6 +6,7 @@ describe('validate', () => {
     PORT: '3000',
     DATABASE_URL: 'postgresql://commerce:commerce@localhost:5432/commerce',
     STRIPE_SECRET_KEY: 'sk_test_123',
+    STRIPE_WEBHOOK_SECRET: 'whsec_test',
   };
 
   it('converts PORT to a number', () => {
@@ -19,6 +20,10 @@ describe('validate', () => {
   it('rejects a missing or empty STRIPE_SECRET_KEY', () => {
     expect(() => validate({ ...base, STRIPE_SECRET_KEY: undefined })).toThrow();
     expect(() => validate({ ...base, STRIPE_SECRET_KEY: '' })).toThrow();
+  });
+
+  it('rejects a missing STRIPE_WEBHOOK_SECRET', () => {
+    expect(() => validate({ ...base, STRIPE_WEBHOOK_SECRET: undefined })).toThrow();
   });
 
   it('accepts a stripe-mock url without a tld and rejects one without a protocol', () => {

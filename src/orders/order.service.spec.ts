@@ -1,6 +1,6 @@
 import { ConflictException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { BadGatewayException } from '@nestjs/common';
-import { Prisma, Product } from '../generated/prisma/client';
+import { OrderStatus, Prisma, Product } from '../generated/prisma/client';
 import { PaymentService } from '../payments/payment.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductRepository } from '../products/product.repository';
@@ -29,7 +29,10 @@ describe('OrderService', () => {
 
   let productRepository: jest.Mocked<Pick<ProductRepository, 'findActiveByIds' | 'reserveStock'>>;
   let orderRepository: jest.Mocked<
-    Pick<OrderRepository, 'create' | 'findById' | 'setPaymentIntent'>
+    Pick<
+      OrderRepository,
+      'create' | 'findById' | 'setPaymentIntent' | 'findByPaymentIntent' | 'transition'
+    >
   >;
   let idempotencyKeyRepository: jest.Mocked<Pick<IdempotencyKeyRepository, 'create' | 'findByKey'>>;
   let paymentService: jest.Mocked<Pick<PaymentService, 'createIntent' | 'getClientSecret'>>;
@@ -59,6 +62,8 @@ describe('OrderService', () => {
       })),
       findById: jest.fn().mockResolvedValue(null),
       setPaymentIntent: jest.fn().mockResolvedValue(undefined),
+      findByPaymentIntent: jest.fn().mockResolvedValue(null),
+      transition: jest.fn().mockResolvedValue(true),
     };
     idempotencyKeyRepository = {
       create: jest.fn().mockResolvedValue(undefined),
@@ -328,6 +333,65 @@ describe('OrderService', () => {
       expect(paymentService.getClientSecret).not.toHaveBeenCalled();
       expect(paymentService.createIntent).not.toHaveBeenCalled();
       expect(order.clientSecret).toBeUndefined();
+    });
+  });
+
+  describe('markPaid', () => {
+    const payment = { paymentIntentId: 'pi_1', amount: 1000, currency: 'usd' };
+    const withStatus = (status: OrderStatus) => ({
+      id: 'order-1',
+      email: 'buyer@example.com',
+      status,
+      currency: 'usd',
+      totalAmount: 1000,
+      paymentIntentId: 'pi_1',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    it('moves a pending order to paid inside the given transaction', async () => {
+      orderRepository.findByPaymentIntent.mockResolvedValue(
+        withStatus(OrderStatus.pending_payment)
+      );
+
+      await service.markPaid(payment, tx as unknown as Prisma.TransactionClient);
+
+      expect(orderRepository.findByPaymentIntent).toHaveBeenCalledWith('pi_1', tx);
+      expect(orderRepository.transition).toHaveBeenCalledWith(
+        'order-1',
+        OrderStatus.pending_payment,
+        OrderStatus.paid,
+        tx
+      );
+    });
+
+    it.each([
+      ['an unknown intent', null, payment],
+      ['an already paid order', withStatus(OrderStatus.paid), payment],
+      ['a cancelled order', withStatus(OrderStatus.cancelled), payment],
+      ['a different amount', withStatus(OrderStatus.pending_payment), { ...payment, amount: 999 }],
+      [
+        'a different currency',
+        withStatus(OrderStatus.pending_payment),
+        { ...payment, currency: 'eur' },
+      ],
+    ])('leaves the order alone for %s', async (_, order, received) => {
+      orderRepository.findByPaymentIntent.mockResolvedValue(order);
+
+      await service.markPaid(received, tx as unknown as Prisma.TransactionClient);
+
+      expect(orderRepository.transition).not.toHaveBeenCalled();
+    });
+
+    it('throws 409 when the status changed underneath, so the event is retried', async () => {
+      orderRepository.findByPaymentIntent.mockResolvedValue(
+        withStatus(OrderStatus.pending_payment)
+      );
+      orderRepository.transition.mockResolvedValue(false);
+
+      await expect(
+        service.markPaid(payment, tx as unknown as Prisma.TransactionClient)
+      ).rejects.toThrow(ConflictException);
     });
   });
 
