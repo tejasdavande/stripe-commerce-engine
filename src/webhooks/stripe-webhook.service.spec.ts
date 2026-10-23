@@ -13,7 +13,7 @@ describe('StripeWebhookService', () => {
   const tx = { tx: true };
 
   let stripeEventRepository: jest.Mocked<Pick<StripeEventRepository, 'create'>>;
-  let orderService: jest.Mocked<Pick<OrderService, 'markPaid'>>;
+  let orderService: jest.Mocked<Pick<OrderService, 'markPaid' | 'cancelForPayment'>>;
   let service: StripeWebhookService;
 
   const event = (type: string, object: Record<string, unknown>) => ({
@@ -40,7 +40,10 @@ describe('StripeWebhookService', () => {
 
   beforeEach(() => {
     stripeEventRepository = { create: jest.fn().mockResolvedValue(undefined) };
-    orderService = { markPaid: jest.fn().mockResolvedValue(undefined) };
+    orderService = {
+      markPaid: jest.fn().mockResolvedValue(undefined),
+      cancelForPayment: jest.fn().mockResolvedValue(undefined),
+    };
     const prisma = {
       $transaction: jest.fn((fn: (client: unknown) => Promise<unknown>) => fn(tx)),
     };
@@ -69,6 +72,17 @@ describe('StripeWebhookService', () => {
       { paymentIntentId: 'pi_1', amount: 4200, currency: 'usd' },
       tx
     );
+  });
+
+  it('cancels the order when its payment intent is canceled', async () => {
+    const { payload, signature } = signed(
+      event('payment_intent.canceled', { id: 'pi_1', object: 'payment_intent' })
+    );
+
+    await service.handle(payload, signature);
+
+    expect(orderService.cancelForPayment).toHaveBeenCalledWith('pi_1', tx);
+    expect(orderService.markPaid).not.toHaveBeenCalled();
   });
 
   it('rejects a missing signature or body', async () => {
@@ -121,5 +135,6 @@ describe('StripeWebhookService', () => {
 
     expect(stripeEventRepository.create).toHaveBeenCalledTimes(2);
     expect(orderService.markPaid).not.toHaveBeenCalled();
+    expect(orderService.cancelForPayment).not.toHaveBeenCalled();
   });
 });

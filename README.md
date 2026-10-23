@@ -2,7 +2,7 @@
 
 Payments and order microservice built with NestJS, PostgreSQL (Prisma) and Stripe. The hard parts of taking money are the focus: checkout that's safe to retry, Stripe webhooks that can arrive twice or out of order, an explicit order state machine, and order events published to RabbitMQ for other services.
 
-Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, a Stripe PaymentIntent per order, and signed, deduplicated Stripe webhooks that mark orders paid are in. Cancellation with stock release and RabbitMQ order events come next.
+Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, a Stripe PaymentIntent per order, and signed, deduplicated Stripe webhooks that mark orders paid or cancel them and release their stock are in. Expiring unpaid orders and RabbitMQ order events come next.
 
 ## Catalog
 
@@ -58,7 +58,7 @@ pending_payment ──> paid ──> fulfilled
        └──> cancelled
 ```
 
-`payment_intent.succeeded` moves the order from `pending_payment` to `paid` with a conditional update (`WHERE status = 'pending_payment'`). Before that, the amount and currency received are checked against the order. A mismatch, an unknown intent or an illegal transition (say, a payment landing on a cancelled order) is logged and acknowledged, because redelivering the event wouldn't change the outcome. Refunding a payment that lands on a cancelled order is still to do. `payment_intent.payment_failed` leaves the order `pending_payment`, because the buyer can retry on the same intent with another card. Other event types are recorded and ignored.
+`payment_intent.succeeded` moves the order from `pending_payment` to `paid` with a conditional update (`WHERE status = 'pending_payment'`). Before that, the amount and currency received are checked against the order. A mismatch, an unknown intent or an illegal transition (say, a payment landing on a cancelled order) is logged and acknowledged, because redelivering the event wouldn't change the outcome. Refunding a payment that lands on a cancelled order is still to do. `payment_intent.payment_failed` leaves the order `pending_payment`, because the buyer can retry on the same intent with another card. `payment_intent.canceled` moves a `pending_payment` order to `cancelled` and puts each item's quantity back into stock in the same transaction. Stock is only released when that call actually moved the order, so a cancellation that arrives again under a new event id, or one that loses a race with a payment, doesn't release it twice. Product rows are updated in product id order, the same order checkout locks them in, so the two can't deadlock. Other event types are recorded and ignored.
 
 To try it against real Stripe test mode, run `stripe listen --forward-to localhost:3000/webhooks/stripe` and put the `whsec_` secret it prints into `STRIPE_WEBHOOK_SECRET`. The e2e suite signs its own events with the test secret.
 

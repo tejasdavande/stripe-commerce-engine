@@ -25,8 +25,17 @@ describe('Stripe webhooks (e2e)', () => {
       .send({ email: 'buyer@example.com', items: [{ productId: product.id, quantity: 2 }] })
       .expect(201);
 
-    return await prisma.order.findUniqueOrThrow({ where: { id: res.body.id } });
+    return await prisma.order.findUniqueOrThrow({
+      where: { id: res.body.id },
+      include: { items: true },
+    });
   };
+
+  const stockOf = async (order: { items: { productId: string }[] }) =>
+    (await prisma.product.findUniqueOrThrow({ where: { id: order.items[0].productId } })).stock;
+
+  const canceledEvent = (order: { paymentIntentId: string | null }) =>
+    intentEvent('payment_intent.canceled', { id: order.paymentIntentId! });
 
   const intentEvent = (
     type: string,
@@ -159,6 +168,50 @@ describe('Stripe webhooks (e2e)', () => {
     await deliver(paidEvent(order)).expect(200);
 
     expect(await statusOf(order.id)).toBe('cancelled');
+  });
+
+  it('cancels the order and puts its stock back when the intent is canceled', async () => {
+    const order = await createOrder();
+    expect(await stockOf(order)).toBe(3);
+
+    await deliver(canceledEvent(order)).expect(200);
+
+    expect(await statusOf(order.id)).toBe('cancelled');
+    expect(await stockOf(order)).toBe(5);
+  });
+
+  it('releases stock once when stripe sends the cancellation again under a new event id', async () => {
+    const order = await createOrder();
+
+    await deliver(canceledEvent(order)).expect(200);
+    await deliver(canceledEvent(order)).expect(200);
+
+    expect(await stockOf(order)).toBe(5);
+  });
+
+  it('leaves a paid order and its stock alone when the intent is canceled', async () => {
+    const order = await createOrder();
+    await deliver(paidEvent(order)).expect(200);
+
+    await deliver(canceledEvent(order)).expect(200);
+
+    expect(await statusOf(order.id)).toBe('paid');
+    expect(await stockOf(order)).toBe(3);
+  });
+
+  it('settles on one outcome when payment and cancellation race', async () => {
+    const order = await createOrder();
+    const paid = paidEvent(order);
+    const canceled = canceledEvent(order);
+
+    const first = await Promise.all([deliver(paid), deliver(canceled)]);
+    expect(first.map((res) => res.status)).toContain(200);
+    // the loser gets 409 and stripe redelivers it
+    await Promise.all([deliver(paid).expect(200), deliver(canceled).expect(200)]);
+
+    const status = await statusOf(order.id);
+    expect(['paid', 'cancelled']).toContain(status);
+    expect(await stockOf(order)).toBe(status === 'paid' ? 3 : 5);
   });
 
   it('acknowledges events for unknown intents and unhandled types', async () => {

@@ -27,7 +27,9 @@ describe('OrderService', () => {
   const idB = '2b2b2b2b-0000-4000-8000-000000000002';
   const tx = { tx: true };
 
-  let productRepository: jest.Mocked<Pick<ProductRepository, 'findActiveByIds' | 'reserveStock'>>;
+  let productRepository: jest.Mocked<
+    Pick<ProductRepository, 'findActiveByIds' | 'reserveStock' | 'releaseStock'>
+  >;
   let orderRepository: jest.Mocked<
     Pick<
       OrderRepository,
@@ -44,6 +46,7 @@ describe('OrderService', () => {
         .fn()
         .mockResolvedValue([makeProduct(idB, { unitAmount: 2500 }), makeProduct(idA)]),
       reserveStock: jest.fn().mockResolvedValue(true),
+      releaseStock: jest.fn().mockResolvedValue(undefined),
     };
     orderRepository = {
       create: jest.fn().mockImplementation(async (data) => ({
@@ -336,18 +339,39 @@ describe('OrderService', () => {
     });
   });
 
+  const withStatus = (status: OrderStatus): OrderWithItems => ({
+    id: 'order-1',
+    email: 'buyer@example.com',
+    status,
+    currency: 'usd',
+    totalAmount: 1000,
+    paymentIntentId: 'pi_1',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    items: [
+      {
+        id: 'item-b',
+        orderId: 'order-1',
+        productId: idB,
+        sku: 'B',
+        name: 'B',
+        unitAmount: 300,
+        quantity: 1,
+      },
+      {
+        id: 'item-a',
+        orderId: 'order-1',
+        productId: idA,
+        sku: 'C',
+        name: 'A',
+        unitAmount: 350,
+        quantity: 2,
+      },
+    ],
+  });
+
   describe('markPaid', () => {
     const payment = { paymentIntentId: 'pi_1', amount: 1000, currency: 'usd' };
-    const withStatus = (status: OrderStatus) => ({
-      id: 'order-1',
-      email: 'buyer@example.com',
-      status,
-      currency: 'usd',
-      totalAmount: 1000,
-      paymentIntentId: 'pi_1',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
 
     it('moves a pending order to paid inside the given transaction', async () => {
       orderRepository.findByPaymentIntent.mockResolvedValue(
@@ -392,6 +416,52 @@ describe('OrderService', () => {
       await expect(
         service.markPaid(payment, tx as unknown as Prisma.TransactionClient)
       ).rejects.toThrow(ConflictException);
+    });
+  });
+
+  describe('cancelForPayment', () => {
+    const db = tx as unknown as Prisma.TransactionClient;
+
+    it('cancels a pending order and releases its stock in product id order', async () => {
+      orderRepository.findByPaymentIntent.mockResolvedValue(
+        withStatus(OrderStatus.pending_payment)
+      );
+
+      await service.cancelForPayment('pi_1', db);
+
+      expect(orderRepository.transition).toHaveBeenCalledWith(
+        'order-1',
+        OrderStatus.pending_payment,
+        OrderStatus.cancelled,
+        tx
+      );
+      expect(productRepository.releaseStock.mock.calls).toEqual([
+        [idA, 2, tx],
+        [idB, 1, tx],
+      ]);
+    });
+
+    it.each([
+      ['an unknown intent', null],
+      ['a paid order', withStatus(OrderStatus.paid)],
+      ['an already cancelled order', withStatus(OrderStatus.cancelled)],
+    ])('releases nothing for %s', async (_, order) => {
+      orderRepository.findByPaymentIntent.mockResolvedValue(order);
+
+      await service.cancelForPayment('pi_1', db);
+
+      expect(orderRepository.transition).not.toHaveBeenCalled();
+      expect(productRepository.releaseStock).not.toHaveBeenCalled();
+    });
+
+    it('throws 409 and releases nothing when the order changed underneath', async () => {
+      orderRepository.findByPaymentIntent.mockResolvedValue(
+        withStatus(OrderStatus.pending_payment)
+      );
+      orderRepository.transition.mockResolvedValue(false);
+
+      await expect(service.cancelForPayment('pi_1', db)).rejects.toThrow(ConflictException);
+      expect(productRepository.releaseStock).not.toHaveBeenCalled();
     });
   });
 

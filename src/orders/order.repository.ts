@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Order, OrderStatus, Prisma } from '../generated/prisma/client';
+import { OrderStatus, Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 const withItems = { items: { orderBy: { sku: 'asc' } } } satisfies Prisma.OrderInclude;
@@ -28,8 +28,8 @@ export class OrderRepository {
   async findByPaymentIntent(
     paymentIntentId: string,
     db: Prisma.TransactionClient = this.prisma
-  ): Promise<Order | null> {
-    return await db.order.findUnique({ where: { paymentIntentId } });
+  ): Promise<OrderWithItems | null> {
+    return await db.order.findUnique({ where: { paymentIntentId }, include: withItems });
   }
 
   async transition(

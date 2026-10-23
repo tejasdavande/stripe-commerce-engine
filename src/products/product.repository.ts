@@ -44,6 +44,14 @@ export class ProductRepository {
     return count === 1;
   }
 
+  async releaseStock(
+    id: string,
+    quantity: number,
+    db: Prisma.TransactionClient = this.prisma
+  ): Promise<void> {
+    await db.product.update({ where: { id }, data: { stock: { increment: quantity } } });
+  }
+
   async upsertBySku(data: Prisma.ProductCreateInput): Promise<Product> {
     return await this.prisma.product.upsert({
       where: { sku: data.sku },

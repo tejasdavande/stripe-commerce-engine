@@ -88,25 +88,47 @@ export class OrderService {
     await this.transition(order, OrderStatus.paid, db);
   }
 
-  // a webhook can't fix an illegal transition by retrying, so it's logged and acknowledged.
+  async cancelForPayment(paymentIntentId: string, db: Prisma.TransactionClient): Promise<void> {
+    const order = await this.orderRepository.findByPaymentIntent(paymentIntentId, db);
+
+    if (!order) {
+      this.logger.warn(`payment intent ${paymentIntentId} was canceled but matches no order`);
+      return;
+    }
+
+    if (!(await this.transition(order, OrderStatus.cancelled, db))) {
+      return;
+    }
+
+    // product id order, same as placeOrder, so this can't deadlock with a concurrent checkout
+    const items = [...order.items].sort((a, b) => (a.productId < b.productId ? -1 : 1));
+    for (const { productId, quantity } of items) {
+      await this.productRepository.releaseStock(productId, quantity, db);
+    }
+  }
+
+  // returns whether this call moved the order. a webhook can't fix an illegal transition by
+  // retrying, so it's logged and acknowledged.
   // TODO: a payment that lands on a cancelled order needs a refund
   private async transition(
     order: Order,
     to: OrderStatus,
     db: Prisma.TransactionClient
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (order.status === to) {
-      return;
+      return false;
     }
 
     if (!canTransition(order.status, to)) {
       this.logger.error(`order ${order.id} can't go from ${order.status} to ${to}`);
-      return;
+      return false;
     }
 
     if (!(await this.orderRepository.transition(order.id, order.status, to, db))) {
       throw new ConflictException(`order ${order.id} changed status concurrently`);
     }
+
+    return true;
   }
 
   // runs after the order transaction commits, so no product rows stay locked during the stripe call.

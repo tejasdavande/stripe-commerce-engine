@@ -71,6 +71,9 @@ export class StripeWebhookService {
         );
         break;
       }
+      case 'payment_intent.canceled':
+        await this.orderService.cancelForPayment(event.data.object.id, tx);
+        break;
       case 'payment_intent.payment_failed':
         this.logger.log(
           `payment attempt failed for intent ${event.data.object.id}, order stays pending_payment`
