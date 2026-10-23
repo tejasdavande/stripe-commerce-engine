@@ -218,6 +218,19 @@ describe('Orders (e2e)', () => {
     });
   });
 
+  it('only fulfils paid orders', async () => {
+    const product = await createProduct();
+    const { body } = await postOrder([{ productId: product.id, quantity: 1 }]).expect(201);
+
+    await request(app.getHttpServer()).post(`/orders/${body.id}/fulfil`).expect(409);
+
+    await prisma.order.update({ where: { id: body.id }, data: { status: 'cancelled' } });
+    await request(app.getHttpServer()).post(`/orders/${body.id}/fulfil`).expect(409);
+
+    await request(app.getHttpServer()).post(`/orders/${randomUUID()}/fulfil`).expect(404);
+    await request(app.getHttpServer()).post('/orders/nope/fulfil').expect(400);
+  });
+
   it('returns 404 for an unknown order and 400 for a malformed id', async () => {
     await request(app.getHttpServer()).get(`/orders/${randomUUID()}`).expect(404);
     await request(app.getHttpServer()).get('/orders/not-a-uuid').expect(400);

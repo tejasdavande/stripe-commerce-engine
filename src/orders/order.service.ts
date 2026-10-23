@@ -67,6 +67,24 @@ export class OrderService {
     return OrderResponseDto.fromModel(await this.findOrThrow(id));
   }
 
+  // fulfilling twice is a no-op, so a warehouse system can retry the call safely
+  async fulfil(id: string): Promise<OrderResponseDto> {
+    const order = await this.findOrThrow(id);
+
+    if (order.status === OrderStatus.fulfilled) {
+      return OrderResponseDto.fromModel(order);
+    }
+
+    if (
+      !canTransition(order.status, OrderStatus.fulfilled) ||
+      !(await this.orderRepository.transition(id, order.status, OrderStatus.fulfilled))
+    ) {
+      throw new ConflictException(`order is ${order.status}, only paid orders can be fulfilled`);
+    }
+
+    return OrderResponseDto.fromModel(await this.findOrThrow(id));
+  }
+
   async markPaid(
     { paymentIntentId, amount, currency }: ReceivedPayment,
     db: Prisma.TransactionClient

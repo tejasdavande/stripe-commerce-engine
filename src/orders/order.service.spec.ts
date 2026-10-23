@@ -465,6 +465,51 @@ describe('OrderService', () => {
     });
   });
 
+  describe('fulfil', () => {
+    it('moves a paid order to fulfilled', async () => {
+      orderRepository.findById
+        .mockResolvedValueOnce(withStatus(OrderStatus.paid))
+        .mockResolvedValueOnce(withStatus(OrderStatus.fulfilled));
+
+      const order = await service.fulfil('order-1');
+
+      expect(orderRepository.transition).toHaveBeenCalledWith(
+        'order-1',
+        OrderStatus.paid,
+        OrderStatus.fulfilled
+      );
+      expect(order.status).toBe(OrderStatus.fulfilled);
+    });
+
+    it('returns an already fulfilled order without touching it', async () => {
+      orderRepository.findById.mockResolvedValue(withStatus(OrderStatus.fulfilled));
+
+      expect((await service.fulfil('order-1')).status).toBe(OrderStatus.fulfilled);
+      expect(orderRepository.transition).not.toHaveBeenCalled();
+    });
+
+    it.each([OrderStatus.pending_payment, OrderStatus.cancelled])(
+      'throws 409 for a %s order',
+      async (status) => {
+        orderRepository.findById.mockResolvedValue(withStatus(status));
+
+        await expect(service.fulfil('order-1')).rejects.toThrow(ConflictException);
+        expect(orderRepository.transition).not.toHaveBeenCalled();
+      }
+    );
+
+    it('throws 409 when the order changed underneath', async () => {
+      orderRepository.findById.mockResolvedValue(withStatus(OrderStatus.paid));
+      orderRepository.transition.mockResolvedValue(false);
+
+      await expect(service.fulfil('order-1')).rejects.toThrow(ConflictException);
+    });
+
+    it('throws 404 for an unknown order', async () => {
+      await expect(service.fulfil('order-1')).rejects.toThrow(NotFoundException);
+    });
+  });
+
   it('throws 404 for an unknown order', async () => {
     await expect(service.getById(idA)).rejects.toThrow(NotFoundException);
   });

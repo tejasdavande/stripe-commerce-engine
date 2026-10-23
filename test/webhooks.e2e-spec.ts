@@ -94,6 +94,19 @@ describe('Stripe webhooks (e2e)', () => {
     });
   });
 
+  it('lets a paid order be fulfilled, and fulfilling again is a no-op', async () => {
+    const order = await createOrder();
+    await deliver(paidEvent(order)).expect(200);
+
+    for (let i = 0; i < 2; i++) {
+      const res = await request(app.getHttpServer()).post(`/orders/${order.id}/fulfil`).expect(200);
+      expect(res.body).toMatchObject({ id: order.id, status: 'fulfilled' });
+    }
+
+    await deliver(canceledEvent(order)).expect(200);
+    expect(await statusOf(order.id)).toBe('fulfilled');
+  });
+
   it('processes an event once when stripe delivers it concurrently', async () => {
     const order = await createOrder();
     const event = paidEvent(order);

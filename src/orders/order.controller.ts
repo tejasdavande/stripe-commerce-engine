@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Res } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderResponseDto } from './dto/order-response.dto';
@@ -27,5 +27,11 @@ export class OrderController {
   @Get(':id')
   async getById(@Param('id', ParseUUIDPipe) id: string): Promise<OrderResponseDto> {
     return await this.orderService.getById(id);
+  }
+
+  @Post(':id/fulfil')
+  @HttpCode(200)
+  async fulfil(@Param('id', ParseUUIDPipe) id: string): Promise<OrderResponseDto> {
+    return await this.orderService.fulfil(id);
   }
 }
