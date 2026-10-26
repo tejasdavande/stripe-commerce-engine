@@ -77,7 +77,7 @@ export class OrderService {
 
     if (
       !canTransition(order.status, OrderStatus.fulfilled) ||
-      !(await this.orderRepository.transition(id, order.status, OrderStatus.fulfilled))
+      !(await this.orderRepository.transition(order, OrderStatus.fulfilled))
     ) {
       throw new ConflictException(`order is ${order.status}, only paid orders can be fulfilled`);
     }
@@ -114,8 +114,14 @@ export class OrderService {
       return;
     }
 
+    await this.cancel(order, db);
+  }
+
+  // stock is only released when this call moved the order, so a redelivered cancellation or an
+  // expiry racing the webhook can't release it twice
+  async cancel(order: OrderWithItems, db: Prisma.TransactionClient): Promise<boolean> {
     if (!(await this.transition(order, OrderStatus.cancelled, db))) {
-      return;
+      return false;
     }
 
     // product id order, same as placeOrder, so this can't deadlock with a concurrent checkout
@@ -123,6 +129,8 @@ export class OrderService {
     for (const { productId, quantity } of items) {
       await this.productRepository.releaseStock(productId, quantity, db);
     }
+
+    return true;
   }
 
   // returns whether this call moved the order. a webhook can't fix an illegal transition by
@@ -142,7 +150,7 @@ export class OrderService {
       return false;
     }
 
-    if (!(await this.orderRepository.transition(order.id, order.status, to, db))) {
+    if (!(await this.orderRepository.transition(order, to, db))) {
       throw new ConflictException(`order ${order.id} changed status concurrently`);
     }
 
@@ -168,7 +176,20 @@ export class OrderService {
       currency: order.currency,
       amount: order.totalAmount,
     });
-    await this.orderRepository.setPaymentIntent(order.id, intent.id);
+
+    // the order expired while stripe was creating the intent. the buyer never gets its secret,
+    // so cancelling it is just cleanup
+    if (!(await this.orderRepository.setPaymentIntent(order.id, intent.id))) {
+      try {
+        await this.paymentService.cancelIntent(intent.id);
+      } catch (error) {
+        this.logger.warn(
+          `could not cancel orphaned intent ${intent.id}: ${(error as Error).message}`
+        );
+      }
+
+      throw new ConflictException('order is no longer awaiting payment');
+    }
 
     return OrderResponseDto.fromModel(order, intent.clientSecret);
   }

@@ -49,6 +49,7 @@ model Order {
   items          OrderItem[]
   idempotencyKey IdempotencyKey?
 
+  @@index([status, createdAt])
   @@map("orders")
 }
 

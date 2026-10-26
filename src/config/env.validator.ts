@@ -1,5 +1,14 @@
 import { plainToInstance } from 'class-transformer';
-import { IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, validateSync } from 'class-validator';
+import {
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUrl,
+  Min,
+  validateSync,
+} from 'class-validator';
 
 class EnvironmentVariables {
   @IsNumber()
@@ -19,6 +28,10 @@ class EnvironmentVariables {
   @IsOptional()
   @IsUrl({ require_tld: false, require_protocol: true, protocols: ['http', 'https'] })
   STRIPE_API_URL?: string;
+
+  @IsInt()
+  @Min(1)
+  ORDER_PAYMENT_TTL_MINUTES: number = 30;
 }
 
 export function validate(config: Record<string, unknown>) {

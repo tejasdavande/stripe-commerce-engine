@@ -37,7 +37,9 @@ describe('OrderService', () => {
     >
   >;
   let idempotencyKeyRepository: jest.Mocked<Pick<IdempotencyKeyRepository, 'create' | 'findByKey'>>;
-  let paymentService: jest.Mocked<Pick<PaymentService, 'createIntent' | 'getClientSecret'>>;
+  let paymentService: jest.Mocked<
+    Pick<PaymentService, 'createIntent' | 'getClientSecret' | 'cancelIntent'>
+  >;
   let service: OrderService;
 
   beforeEach(() => {
@@ -64,7 +66,7 @@ describe('OrderService', () => {
         })),
       })),
       findById: jest.fn().mockResolvedValue(null),
-      setPaymentIntent: jest.fn().mockResolvedValue(undefined),
+      setPaymentIntent: jest.fn().mockResolvedValue(true),
       findByPaymentIntent: jest.fn().mockResolvedValue(null),
       transition: jest.fn().mockResolvedValue(true),
     };
@@ -75,6 +77,7 @@ describe('OrderService', () => {
     paymentService = {
       createIntent: jest.fn().mockResolvedValue({ id: 'pi_new', clientSecret: 'pi_new_secret' }),
       getClientSecret: jest.fn().mockResolvedValue('pi_old_secret'),
+      cancelIntent: jest.fn().mockResolvedValue(true),
     };
     const prisma = {
       $transaction: jest.fn((fn: (client: unknown) => Promise<unknown>) => fn(tx)),
@@ -330,6 +333,20 @@ describe('OrderService', () => {
       expect(order.clientSecret).toBe('pi_new_secret');
     });
 
+    it('cancels the new intent and throws 409 when the order expired in the meantime', async () => {
+      orderRepository.setPaymentIntent.mockResolvedValue(false);
+
+      await expect(service.create(dto)).rejects.toThrow(ConflictException);
+      expect(paymentService.cancelIntent).toHaveBeenCalledWith('pi_new');
+    });
+
+    it('still throws 409 when cancelling the orphaned intent fails', async () => {
+      orderRepository.setPaymentIntent.mockResolvedValue(false);
+      paymentService.cancelIntent.mockRejectedValue(new BadGatewayException());
+
+      await expect(service.create(dto)).rejects.toThrow(ConflictException);
+    });
+
     it('returns no client secret once the order is no longer awaiting payment', async () => {
       const { order } = await replayWith(stored({ status: 'paid', paymentIntentId: 'pi_old' }));
 
@@ -382,8 +399,7 @@ describe('OrderService', () => {
 
       expect(orderRepository.findByPaymentIntent).toHaveBeenCalledWith('pi_1', tx);
       expect(orderRepository.transition).toHaveBeenCalledWith(
-        'order-1',
-        OrderStatus.pending_payment,
+        expect.objectContaining({ id: 'order-1', status: OrderStatus.pending_payment }),
         OrderStatus.paid,
         tx
       );
@@ -430,8 +446,7 @@ describe('OrderService', () => {
       await service.cancelForPayment('pi_1', db);
 
       expect(orderRepository.transition).toHaveBeenCalledWith(
-        'order-1',
-        OrderStatus.pending_payment,
+        expect.objectContaining({ id: 'order-1', status: OrderStatus.pending_payment }),
         OrderStatus.cancelled,
         tx
       );
@@ -465,6 +480,16 @@ describe('OrderService', () => {
     });
   });
 
+  describe('cancel', () => {
+    const db = tx as unknown as Prisma.TransactionClient;
+
+    it('reports whether this call cancelled the order', async () => {
+      await expect(service.cancel(withStatus(OrderStatus.pending_payment), db)).resolves.toBe(true);
+      await expect(service.cancel(withStatus(OrderStatus.cancelled), db)).resolves.toBe(false);
+      expect(productRepository.releaseStock).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('fulfil', () => {
     it('moves a paid order to fulfilled', async () => {
       orderRepository.findById
@@ -474,8 +499,7 @@ describe('OrderService', () => {
       const order = await service.fulfil('order-1');
 
       expect(orderRepository.transition).toHaveBeenCalledWith(
-        'order-1',
-        OrderStatus.paid,
+        expect.objectContaining({ id: 'order-1', status: OrderStatus.paid }),
         OrderStatus.fulfilled
       );
       expect(order.status).toBe(OrderStatus.fulfilled);

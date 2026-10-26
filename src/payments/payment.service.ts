@@ -47,6 +47,27 @@ export class PaymentService {
     return this.clientSecretOf(intent);
   }
 
+  // false when the intent can no longer be cancelled because it succeeded or is still processing
+  async cancelIntent(paymentIntentId: string): Promise<boolean> {
+    return await this.call(async () => {
+      try {
+        await this.stripe.paymentIntents.cancel(paymentIntentId, {
+          cancellation_reason: 'abandoned',
+        });
+        return true;
+      } catch (error) {
+        if (
+          error instanceof Stripe.errors.StripeError &&
+          error.code === 'payment_intent_unexpected_state'
+        ) {
+          return error.payment_intent?.status === 'canceled';
+        }
+
+        throw error;
+      }
+    });
+  }
+
   private async call<T>(request: () => Promise<T>): Promise<T> {
     try {
       return await request();

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { OrderStatus, Prisma } from '../generated/prisma/client';
+import { Order, OrderStatus, Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 const withItems = { items: { orderBy: { sku: 'asc' } } } satisfies Prisma.OrderInclude;
@@ -21,8 +21,22 @@ export class OrderRepository {
     return await this.prisma.order.findUnique({ where: { id }, include: withItems });
   }
 
-  async setPaymentIntent(id: string, paymentIntentId: string): Promise<void> {
-    await this.prisma.order.update({ where: { id }, data: { paymentIntentId } });
+  async setPaymentIntent(id: string, paymentIntentId: string): Promise<boolean> {
+    const { count } = await this.prisma.order.updateMany({
+      where: { id, status: OrderStatus.pending_payment },
+      data: { paymentIntentId },
+    });
+
+    return count === 1;
+  }
+
+  async findPendingCreatedBefore(createdBefore: Date, limit: number): Promise<OrderWithItems[]> {
+    return await this.prisma.order.findMany({
+      where: { status: OrderStatus.pending_payment, createdAt: { lt: createdBefore } },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+      include: withItems,
+    });
   }
 
   async findByPaymentIntent(
@@ -32,14 +46,14 @@ export class OrderRepository {
     return await db.order.findUnique({ where: { paymentIntentId }, include: withItems });
   }
 
+  // only applies if the order still has the status and payment intent it was read with
   async transition(
-    id: string,
-    from: OrderStatus,
+    { id, status, paymentIntentId }: Pick<Order, 'id' | 'status' | 'paymentIntentId'>,
     to: OrderStatus,
     db: Prisma.TransactionClient = this.prisma
   ): Promise<boolean> {
     const { count } = await db.order.updateMany({
-      where: { id, status: from },
+      where: { id, status, paymentIntentId },
       data: { status: to },
     });
 

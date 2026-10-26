@@ -32,4 +32,11 @@ describe('validate', () => {
     );
     expect(() => validate({ ...base, STRIPE_API_URL: 'localhost:12111' })).toThrow();
   });
+
+  it('defaults the unpaid order ttl to 30 minutes and rejects anything below 1', () => {
+    expect(validate(base).ORDER_PAYMENT_TTL_MINUTES).toBe(30);
+    expect(validate({ ...base, ORDER_PAYMENT_TTL_MINUTES: '5' }).ORDER_PAYMENT_TTL_MINUTES).toBe(5);
+    expect(() => validate({ ...base, ORDER_PAYMENT_TTL_MINUTES: '0' })).toThrow();
+    expect(() => validate({ ...base, ORDER_PAYMENT_TTL_MINUTES: '1.5' })).toThrow();
+  });
 });
