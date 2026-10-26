@@ -2,7 +2,7 @@
 
 Payments and order microservice built with NestJS, PostgreSQL (Prisma) and Stripe. The hard parts of taking money are the focus: checkout that's safe to retry, Stripe webhooks that can arrive twice or out of order, an explicit order state machine, and order events published to RabbitMQ for other services.
 
-Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, a Stripe PaymentIntent per order, and signed, deduplicated Stripe webhooks that mark orders paid or cancel them and release their stock are in. Expiring unpaid orders and RabbitMQ order events come next.
+Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, a Stripe PaymentIntent per order, and signed, deduplicated Stripe webhooks that mark orders paid or cancel them and release their stock, and a job that expires unpaid orders are in. RabbitMQ order events come next.
 
 ## Catalog
 
@@ -62,11 +62,20 @@ pending_payment ──> paid ──> fulfilled
 
 To try it against real Stripe test mode, run `stripe listen --forward-to localhost:3000/webhooks/stripe` and put the `whsec_` secret it prints into `STRIPE_WEBHOOK_SECRET`. The e2e suite signs its own events with the test secret.
 
+## Unpaid order expiry
+
+An abandoned checkout would otherwise hold its stock forever. Once a minute, a job (`@nestjs/schedule`) picks up to 100 `pending_payment` orders older than `ORDER_PAYMENT_TTL_MINUTES` (default 30), oldest first, and for each one:
+
+1. Cancels its PaymentIntent at Stripe, so the buyer can no longer pay for an order that's about to be cancelled. If Stripe refuses because the intent already succeeded or is still processing, the order is left alone and the webhook settles it. An intent that was already canceled counts as cancelled.
+2. Cancels the order and releases its stock in one transaction, through the same code path as the `payment_intent.canceled` webhook. That webhook arrives right after step 1 and finds the order already cancelled, so stock is released once whichever gets there first.
+
+An order with no intent (Stripe failed during checkout) is cancelled straight away. The cancel only applies if the order still has the status and intent it was read with, so a checkout retry that attaches an intent between the read and the cancel makes the expiry back off until the next run. The other direction is covered too: a checkout retry that creates an intent for an order that has just expired gets `409`, and that intent is cancelled. A failure on one order is logged and the run moves on, and a run that's still going when the next minute starts makes that tick skip. Every step is conditional, so running several instances costs a few wasted calls but no double cancellation.
+
 There's no auth in this service. It's meant to sit behind a gateway, and order ids are random UUIDs.
 
 ## Tech stack
 
-NestJS 11, TypeScript, PostgreSQL 16, Prisma 7 (with the `pg` driver adapter), Stripe, RabbitMQ, Docker.
+NestJS 11, TypeScript, PostgreSQL 16, Prisma 7 (with the `pg` driver adapter), Stripe, `@nestjs/schedule`, RabbitMQ, Docker.
 
 ## Endpoints
 
@@ -75,7 +84,7 @@ NestJS 11, TypeScript, PostgreSQL 16, Prisma 7 (with the `pg` driver adapter), S
 | GET | `/health` | `200` when Postgres answers, `503` otherwise |
 | GET | `/products?page=&limit=` | active products, newest first; `limit` up to 100 (default 20) |
 | GET | `/products/:id` | one active product; `404` if it doesn't exist or is inactive, `400` for a malformed id |
-| POST | `/orders` | create an order, reserve stock and return a Stripe `clientSecret`; optional `Idempotency-Key` header; `404` unknown product, `409` not enough stock, `422` mixed currencies or a reused key with a different body, `502` Stripe unavailable (retry with the same key) |
+| POST | `/orders` | create an order, reserve stock and return a Stripe `clientSecret`; optional `Idempotency-Key` header; `404` unknown product, `409` not enough stock or the order expired while its intent was being created, `422` mixed currencies or a reused key with a different body, `502` Stripe unavailable (retry with the same key) |
 | GET | `/orders/:id` | one order with its items; `404` if it doesn't exist |
 | POST | `/orders/:id/fulfil` | mark a paid order fulfilled (called once it ships); `200` again for an already fulfilled order, `409` for any other status |
 | POST | `/webhooks/stripe` | Stripe webhook receiver; `400` for a missing or invalid signature, `200` once the event is applied or was already seen |
