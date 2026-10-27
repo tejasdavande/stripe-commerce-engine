@@ -6,7 +6,8 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { createHash } from 'crypto';
-import { Order, OrderStatus, Prisma, Product } from '../generated/prisma/client';
+import { OrderStatus, Prisma, Product } from '../generated/prisma/client';
+import { OutboxRepository } from '../outbox/outbox.repository';
 import { PaymentService } from '../payments/payment.service';
 import { isUniqueViolation } from '../prisma/is-unique-violation';
 import { PrismaService } from '../prisma/prisma.service';
@@ -38,7 +39,8 @@ export class OrderService {
     private readonly productRepository: ProductRepository,
     private readonly orderRepository: OrderRepository,
     private readonly idempotencyKeyRepository: IdempotencyKeyRepository,
-    private readonly paymentService: PaymentService
+    private readonly paymentService: PaymentService,
+    private readonly outboxRepository: OutboxRepository
   ) {}
 
   async create(dto: CreateOrderDto, idempotencyKey?: string): Promise<CreateOrderResult> {
@@ -75,12 +77,11 @@ export class OrderService {
       return OrderResponseDto.fromModel(order);
     }
 
-    if (
-      !canTransition(order.status, OrderStatus.fulfilled) ||
-      !(await this.orderRepository.transition(order, OrderStatus.fulfilled))
-    ) {
+    if (!canTransition(order.status, OrderStatus.fulfilled)) {
       throw new ConflictException(`order is ${order.status}, only paid orders can be fulfilled`);
     }
+
+    await this.prisma.$transaction((tx) => this.transition(order, OrderStatus.fulfilled, tx));
 
     return OrderResponseDto.fromModel(await this.findOrThrow(id));
   }
@@ -137,7 +138,7 @@ export class OrderService {
   // retrying, so it's logged and acknowledged.
   // TODO: a payment that lands on a cancelled order needs a refund
   private async transition(
-    order: Order,
+    order: OrderWithItems,
     to: OrderStatus,
     db: Prisma.TransactionClient
   ): Promise<boolean> {
@@ -154,7 +155,26 @@ export class OrderService {
       throw new ConflictException(`order ${order.id} changed status concurrently`);
     }
 
+    await this.outboxRepository.add(`order.${to}`, order.id, this.eventPayload(order, to), db);
+
     return true;
+  }
+
+  private eventPayload(order: OrderWithItems, status: OrderStatus): Prisma.InputJsonObject {
+    return {
+      orderId: order.id,
+      status,
+      email: order.email,
+      currency: order.currency,
+      totalAmount: order.totalAmount,
+      paymentIntentId: order.paymentIntentId,
+      items: order.items.map(({ productId, sku, unitAmount, quantity }) => ({
+        productId,
+        sku,
+        unitAmount,
+        quantity,
+      })),
+    };
   }
 
   // runs after the order transaction commits, so no product rows stay locked during the stripe call.

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { OutboxModule } from '../outbox/outbox.module';
 import { PaymentModule } from '../payments/payment.module';
 import { ProductModule } from '../products/product.module';
 import { IdempotencyKeyRepository } from './idempotency-key.repository';
@@ -9,7 +10,7 @@ import { OrderRepository } from './order.repository';
 import { OrderService } from './order.service';
 
 @Module({
-  imports: [ProductModule, PaymentModule],
+  imports: [ProductModule, PaymentModule, OutboxModule],
   controllers: [OrderController],
   providers: [
     OrderRepository,

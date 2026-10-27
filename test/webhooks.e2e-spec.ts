@@ -66,6 +66,14 @@ describe('Stripe webhooks (e2e)', () => {
   const statusOf = async (id: string) =>
     (await request(app.getHttpServer()).get(`/orders/${id}`).expect(200)).body.status;
 
+  const outboxTypes = async (orderId: string) =>
+    (
+      await prisma.outboxEvent.findMany({
+        where: { aggregateId: orderId },
+        orderBy: { createdAt: 'asc' },
+      })
+    ).map((event) => event.type);
+
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
@@ -92,6 +100,20 @@ describe('Stripe webhooks (e2e)', () => {
     expect(await prisma.stripeEvent.findUnique({ where: { id: event.id } })).toMatchObject({
       type: 'payment_intent.succeeded',
     });
+    expect(
+      await prisma.outboxEvent.findFirstOrThrow({ where: { aggregateId: order.id } })
+    ).toMatchObject({
+      type: 'order.paid',
+      publishedAt: null,
+      payload: {
+        orderId: order.id,
+        status: 'paid',
+        email: 'buyer@example.com',
+        totalAmount: order.totalAmount,
+        paymentIntentId: order.paymentIntentId,
+        items: [{ productId: order.items[0].productId, quantity: 2 }],
+      },
+    });
   });
 
   it('lets a paid order be fulfilled, and fulfilling again is a no-op', async () => {
@@ -105,6 +127,7 @@ describe('Stripe webhooks (e2e)', () => {
 
     await deliver(canceledEvent(order)).expect(200);
     expect(await statusOf(order.id)).toBe('fulfilled');
+    expect(await outboxTypes(order.id)).toEqual(['order.paid', 'order.fulfilled']);
   });
 
   it('processes an event once when stripe delivers it concurrently', async () => {
@@ -116,6 +139,7 @@ describe('Stripe webhooks (e2e)', () => {
     expect(results.map((res) => res.status)).toEqual(Array(5).fill(200));
     expect(await prisma.stripeEvent.count({ where: { id: event.id } })).toBe(1);
     expect(await statusOf(order.id)).toBe('paid');
+    expect(await outboxTypes(order.id)).toEqual(['order.paid']);
   });
 
   it('rejects unsigned, forged and tampered payloads without touching the order', async () => {
@@ -142,6 +166,7 @@ describe('Stripe webhooks (e2e)', () => {
 
     expect(await statusOf(order.id)).toBe('pending_payment');
     expect(await prisma.stripeEvent.count({ where: { id: event.id } })).toBe(0);
+    expect(await outboxTypes(order.id)).toEqual([]);
   });
 
   it('keeps the order pending when the amount received does not match', async () => {
@@ -191,6 +216,7 @@ describe('Stripe webhooks (e2e)', () => {
 
     expect(await statusOf(order.id)).toBe('cancelled');
     expect(await stockOf(order)).toBe(5);
+    expect(await outboxTypes(order.id)).toEqual(['order.cancelled']);
   });
 
   it('releases stock once when stripe sends the cancellation again under a new event id', async () => {
@@ -200,6 +226,7 @@ describe('Stripe webhooks (e2e)', () => {
     await deliver(canceledEvent(order)).expect(200);
 
     expect(await stockOf(order)).toBe(5);
+    expect(await outboxTypes(order.id)).toEqual(['order.cancelled']);
   });
 
   it('leaves a paid order and its stock alone when the intent is canceled', async () => {
@@ -225,6 +252,7 @@ describe('Stripe webhooks (e2e)', () => {
     const status = await statusOf(order.id);
     expect(['paid', 'cancelled']).toContain(status);
     expect(await stockOf(order)).toBe(status === 'paid' ? 3 : 5);
+    expect(await outboxTypes(order.id)).toEqual([`order.${status}`]);
   });
 
   it('acknowledges events for unknown intents and unhandled types', async () => {

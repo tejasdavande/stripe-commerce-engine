@@ -2,7 +2,7 @@
 
 Payments and order microservice built with NestJS, PostgreSQL (Prisma) and Stripe. The hard parts of taking money are the focus: checkout that's safe to retry, Stripe webhooks that can arrive twice or out of order, an explicit order state machine, and order events published to RabbitMQ for other services.
 
-Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, a Stripe PaymentIntent per order, and signed, deduplicated Stripe webhooks that mark orders paid or cancel them and release their stock, and a job that expires unpaid orders are in. RabbitMQ order events come next.
+Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, a Stripe PaymentIntent per order, and signed, deduplicated Stripe webhooks that mark orders paid or cancel them and release their stock, a job that expires unpaid orders, and a transactional outbox of order events are in. Publishing those events to RabbitMQ comes next.
 
 ## Catalog
 
@@ -70,6 +70,10 @@ An abandoned checkout would otherwise hold its stock forever. Once a minute, a j
 2. Cancels the order and releases its stock in one transaction, through the same code path as the `payment_intent.canceled` webhook. That webhook arrives right after step 1 and finds the order already cancelled, so stock is released once whichever gets there first.
 
 An order with no intent (Stripe failed during checkout) is cancelled straight away. The cancel only applies if the order still has the status and intent it was read with, so a checkout retry that attaches an intent between the read and the cancel makes the expiry back off until the next run. The other direction is covered too: a checkout retry that creates an intent for an order that has just expired gets `409`, and that intent is cancelled. A failure on one order is logged and the run moves on, and a run that's still going when the next minute starts makes that tick skip. Every step is conditional, so running several instances costs a few wasted calls but no double cancellation.
+
+## Order events
+
+Every status change (`order.paid`, `order.cancelled`, `order.fulfilled`) writes a row to `outbox_events` in the same transaction as the change itself, so an event exists if and only if the change committed. The payload is a snapshot of the order: id, status, email, total, currency, payment intent and line items. Rows only get written when a call actually moved the order, so a redelivered webhook or an expiry racing a cancellation produces one event, not two. Publishing them to RabbitMQ comes next.
 
 There's no auth in this service. It's meant to sit behind a gateway, and order ids are random UUIDs.
 

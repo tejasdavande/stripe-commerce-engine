@@ -1,6 +1,7 @@
 import { ConflictException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { BadGatewayException } from '@nestjs/common';
 import { OrderStatus, Prisma, Product } from '../generated/prisma/client';
+import { OutboxRepository } from '../outbox/outbox.repository';
 import { PaymentService } from '../payments/payment.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductRepository } from '../products/product.repository';
@@ -40,6 +41,7 @@ describe('OrderService', () => {
   let paymentService: jest.Mocked<
     Pick<PaymentService, 'createIntent' | 'getClientSecret' | 'cancelIntent'>
   >;
+  let outboxRepository: jest.Mocked<Pick<OutboxRepository, 'add'>>;
   let service: OrderService;
 
   beforeEach(() => {
@@ -79,6 +81,7 @@ describe('OrderService', () => {
       getClientSecret: jest.fn().mockResolvedValue('pi_old_secret'),
       cancelIntent: jest.fn().mockResolvedValue(true),
     };
+    outboxRepository = { add: jest.fn().mockResolvedValue(undefined) };
     const prisma = {
       $transaction: jest.fn((fn: (client: unknown) => Promise<unknown>) => fn(tx)),
     };
@@ -87,7 +90,8 @@ describe('OrderService', () => {
       productRepository as unknown as ProductRepository,
       orderRepository as unknown as OrderRepository,
       idempotencyKeyRepository as unknown as IdempotencyKeyRepository,
-      paymentService as unknown as PaymentService
+      paymentService as unknown as PaymentService,
+      outboxRepository as unknown as OutboxRepository
     );
   });
 
@@ -403,6 +407,23 @@ describe('OrderService', () => {
         OrderStatus.paid,
         tx
       );
+      expect(outboxRepository.add).toHaveBeenCalledWith(
+        'order.paid',
+        'order-1',
+        {
+          orderId: 'order-1',
+          status: OrderStatus.paid,
+          email: 'buyer@example.com',
+          currency: 'usd',
+          totalAmount: 1000,
+          paymentIntentId: 'pi_1',
+          items: [
+            { productId: idB, sku: 'B', unitAmount: 300, quantity: 1 },
+            { productId: idA, sku: 'C', unitAmount: 350, quantity: 2 },
+          ],
+        },
+        tx
+      );
     });
 
     it.each([
@@ -421,6 +442,7 @@ describe('OrderService', () => {
       await service.markPaid(received, tx as unknown as Prisma.TransactionClient);
 
       expect(orderRepository.transition).not.toHaveBeenCalled();
+      expect(outboxRepository.add).not.toHaveBeenCalled();
     });
 
     it('throws 409 when the status changed underneath, so the event is retried', async () => {
@@ -432,6 +454,7 @@ describe('OrderService', () => {
       await expect(
         service.markPaid(payment, tx as unknown as Prisma.TransactionClient)
       ).rejects.toThrow(ConflictException);
+      expect(outboxRepository.add).not.toHaveBeenCalled();
     });
   });
 
@@ -454,6 +477,12 @@ describe('OrderService', () => {
         [idA, 2, tx],
         [idB, 1, tx],
       ]);
+      expect(outboxRepository.add).toHaveBeenCalledWith(
+        'order.cancelled',
+        'order-1',
+        expect.objectContaining({ status: OrderStatus.cancelled }),
+        tx
+      );
     });
 
     it.each([
@@ -467,6 +496,7 @@ describe('OrderService', () => {
 
       expect(orderRepository.transition).not.toHaveBeenCalled();
       expect(productRepository.releaseStock).not.toHaveBeenCalled();
+      expect(outboxRepository.add).not.toHaveBeenCalled();
     });
 
     it('throws 409 and releases nothing when the order changed underneath', async () => {
@@ -477,6 +507,7 @@ describe('OrderService', () => {
 
       await expect(service.cancelForPayment('pi_1', db)).rejects.toThrow(ConflictException);
       expect(productRepository.releaseStock).not.toHaveBeenCalled();
+      expect(outboxRepository.add).not.toHaveBeenCalled();
     });
   });
 
@@ -487,11 +518,12 @@ describe('OrderService', () => {
       await expect(service.cancel(withStatus(OrderStatus.pending_payment), db)).resolves.toBe(true);
       await expect(service.cancel(withStatus(OrderStatus.cancelled), db)).resolves.toBe(false);
       expect(productRepository.releaseStock).toHaveBeenCalledTimes(2);
+      expect(outboxRepository.add).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('fulfil', () => {
-    it('moves a paid order to fulfilled', async () => {
+    it('moves a paid order to fulfilled and records the event in the same transaction', async () => {
       orderRepository.findById
         .mockResolvedValueOnce(withStatus(OrderStatus.paid))
         .mockResolvedValueOnce(withStatus(OrderStatus.fulfilled));
@@ -500,7 +532,14 @@ describe('OrderService', () => {
 
       expect(orderRepository.transition).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'order-1', status: OrderStatus.paid }),
-        OrderStatus.fulfilled
+        OrderStatus.fulfilled,
+        tx
+      );
+      expect(outboxRepository.add).toHaveBeenCalledWith(
+        'order.fulfilled',
+        'order-1',
+        expect.objectContaining({ status: OrderStatus.fulfilled }),
+        tx
       );
       expect(order.status).toBe(OrderStatus.fulfilled);
     });
@@ -510,6 +549,7 @@ describe('OrderService', () => {
 
       expect((await service.fulfil('order-1')).status).toBe(OrderStatus.fulfilled);
       expect(orderRepository.transition).not.toHaveBeenCalled();
+      expect(outboxRepository.add).not.toHaveBeenCalled();
     });
 
     it.each([OrderStatus.pending_payment, OrderStatus.cancelled])(
@@ -527,6 +567,7 @@ describe('OrderService', () => {
       orderRepository.transition.mockResolvedValue(false);
 
       await expect(service.fulfil('order-1')).rejects.toThrow(ConflictException);
+      expect(outboxRepository.add).not.toHaveBeenCalled();
     });
 
     it('throws 404 for an unknown order', async () => {

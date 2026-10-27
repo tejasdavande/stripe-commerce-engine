@@ -59,6 +59,9 @@ describe('Order expiry (e2e)', () => {
     await app.close();
   });
 
+  const cancelledEvents = (orderId: string) =>
+    prisma.outboxEvent.count({ where: { aggregateId: orderId, type: 'order.cancelled' } });
+
   it('cancels unpaid orders past the ttl and releases their stock', async () => {
     const order = await createOrder();
     await backdate(order.id);
@@ -66,6 +69,7 @@ describe('Order expiry (e2e)', () => {
     await expiry.expireUnpaid();
 
     expect(await stateOf(order.id)).toEqual({ status: 'cancelled', stock: 5 });
+    expect(await cancelledEvents(order.id)).toBe(1);
   });
 
   it('cancels an old order that never got a payment intent', async () => {
@@ -90,6 +94,7 @@ describe('Order expiry (e2e)', () => {
       prisma.$transaction((tx) => app.get(OrderService).cancel(stale, tx))
     ).rejects.toThrow(ConflictException);
     expect(await stateOf(order.id)).toEqual({ status: 'pending_payment', stock: 3 });
+    expect(await cancelledEvents(order.id)).toBe(0);
   });
 
   it('leaves recent and paid orders alone', async () => {
@@ -130,6 +135,7 @@ describe('Order expiry (e2e)', () => {
       .expect(200);
 
     expect(await stateOf(order.id)).toEqual({ status: 'cancelled', stock: 5 });
+    expect(await cancelledEvents(order.id)).toBe(1);
   });
 
   it('no longer hands out a client secret for an expired order', async () => {
