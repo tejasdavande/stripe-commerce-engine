@@ -104,7 +104,6 @@ describe('Stripe webhooks (e2e)', () => {
       await prisma.outboxEvent.findFirstOrThrow({ where: { aggregateId: order.id } })
     ).toMatchObject({
       type: 'order.paid',
-      publishedAt: null,
       payload: {
         orderId: order.id,
         status: 'paid',

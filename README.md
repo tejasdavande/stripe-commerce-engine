@@ -2,7 +2,7 @@
 
 Payments and order microservice built with NestJS, PostgreSQL (Prisma) and Stripe. The hard parts of taking money are the focus: checkout that's safe to retry, Stripe webhooks that can arrive twice or out of order, an explicit order state machine, and order events published to RabbitMQ for other services.
 
-Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, a Stripe PaymentIntent per order, and signed, deduplicated Stripe webhooks that mark orders paid or cancel them and release their stock, a job that expires unpaid orders, and a transactional outbox of order events are in. Publishing those events to RabbitMQ comes next.
+Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, a Stripe PaymentIntent per order, and signed, deduplicated Stripe webhooks that mark orders paid or cancel them and release their stock, a job that expires unpaid orders, and order events published to RabbitMQ through a transactional outbox are in.
 
 ## Catalog
 
@@ -73,13 +73,23 @@ An order with no intent (Stripe failed during checkout) is cancelled straight aw
 
 ## Order events
 
-Every status change (`order.paid`, `order.cancelled`, `order.fulfilled`) writes a row to `outbox_events` in the same transaction as the change itself, so an event exists if and only if the change committed. The payload is a snapshot of the order: id, status, email, total, currency, payment intent and line items. Rows only get written when a call actually moved the order, so a redelivered webhook or an expiry racing a cancellation produces one event, not two. Publishing them to RabbitMQ comes next.
+Every status change (`order.paid`, `order.cancelled`, `order.fulfilled`) writes a row to `outbox_events` in the same transaction as the change itself, so an event exists if and only if the change committed. The payload is a snapshot of the order: id, status, email, total, currency, payment intent and line items. Rows only get written when a call actually moved the order, so a redelivered webhook or an expiry racing a cancellation produces one event, not two.
+
+Writing to RabbitMQ directly from those transactions would break that guarantee: the publish can succeed for a change that then rolls back, or the commit can succeed and the publish fail. Instead, a relay runs every second and, in one transaction:
+
+1. Claims up to 100 unpublished rows, oldest first, with `SELECT ... FOR UPDATE SKIP LOCKED`.
+2. Publishes them to the durable `commerce.events` topic exchange on a confirm channel, with the event type as the routing key (`order.paid`, ...), the outbox row id as `messageId`, and persistent delivery, then waits for the broker to confirm every message.
+3. Sets `published_at` on those rows and commits.
+
+If RabbitMQ is down, the publish fails, the transaction rolls back, and the rows wait for the next run. Checkout and webhooks don't notice: `/health` doesn't check the broker, because the outbox is there so the API doesn't depend on it. The relay logs one warning when an outage starts and one line when it recovers, and reconnects on its own. A confirm that doesn't arrive within 10 seconds counts as a failure too.
+
+Delivery is at least once. A crash after the broker confirms but before the commit publishes the batch again, so consumers should dedupe on `messageId`. `SKIP LOCKED` lets several app instances relay at once without waiting on each other's rows, which also means events are only ordered within one batch, not across instances. Consumers should treat the `status` in the payload as the source of truth, not the order the messages arrive in. The exchange only delivers to queues that are bound to it, so a consumer declares its own durable queue and binds it (for example to `order.#`). In compose, the RabbitMQ management UI is at http://localhost:15672 (guest/guest).
 
 There's no auth in this service. It's meant to sit behind a gateway, and order ids are random UUIDs.
 
 ## Tech stack
 
-NestJS 11, TypeScript, PostgreSQL 16, Prisma 7 (with the `pg` driver adapter), Stripe, `@nestjs/schedule`, RabbitMQ, Docker.
+NestJS 11, TypeScript, PostgreSQL 16, Prisma 7 (with the `pg` driver adapter), Stripe, `@nestjs/schedule`, RabbitMQ 4 (`amqplib`), Docker.
 
 ## Endpoints
 
@@ -97,7 +107,7 @@ NestJS 11, TypeScript, PostgreSQL 16, Prisma 7 (with the `pg` driver adapter), S
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres stripe-mock
+docker compose up -d postgres stripe-mock rabbitmq
 npm install
 npm run migrate:deploy
 npm run seed
@@ -114,15 +124,15 @@ Or run everything in containers with `docker compose up --build`, after applying
 npm test
 ```
 
-The e2e suite boots the real app against Postgres and stripe-mock:
+The e2e suite boots the real app against Postgres, stripe-mock and RabbitMQ:
 
 ```bash
-docker compose up -d postgres stripe-mock
+docker compose up -d postgres stripe-mock rabbitmq
 npm run migrate:deploy
 npm run test:e2e
 ```
 
-CI runs lint, a Prettier check, the build, and both suites, with Postgres and stripe-mock as service containers.
+CI runs lint, a Prettier check, the build, and both suites, with Postgres, stripe-mock and RabbitMQ as service containers.
 
 ## License
 
