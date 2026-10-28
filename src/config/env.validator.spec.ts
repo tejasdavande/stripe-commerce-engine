@@ -7,6 +7,7 @@ describe('validate', () => {
     DATABASE_URL: 'postgresql://commerce:commerce@localhost:5432/commerce',
     STRIPE_SECRET_KEY: 'sk_test_123',
     STRIPE_WEBHOOK_SECRET: 'whsec_test',
+    RABBITMQ_URL: 'amqp://guest:guest@localhost:5672',
   };
 
   it('converts PORT to a number', () => {
@@ -38,5 +39,13 @@ describe('validate', () => {
     expect(validate({ ...base, ORDER_PAYMENT_TTL_MINUTES: '5' }).ORDER_PAYMENT_TTL_MINUTES).toBe(5);
     expect(() => validate({ ...base, ORDER_PAYMENT_TTL_MINUTES: '0' })).toThrow();
     expect(() => validate({ ...base, ORDER_PAYMENT_TTL_MINUTES: '1.5' })).toThrow();
+  });
+
+  it('requires an amqp or amqps RABBITMQ_URL', () => {
+    expect(
+      validate({ ...base, RABBITMQ_URL: 'amqps://user:pass@mq.example.com' }).RABBITMQ_URL
+    ).toBe('amqps://user:pass@mq.example.com');
+    expect(() => validate({ ...base, RABBITMQ_URL: undefined })).toThrow();
+    expect(() => validate({ ...base, RABBITMQ_URL: 'http://localhost:5672' })).toThrow();
   });
 });

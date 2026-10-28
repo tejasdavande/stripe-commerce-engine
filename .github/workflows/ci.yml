@@ -27,12 +27,22 @@ jobs:
         image: stripe/stripe-mock:v0.206.0
         ports:
           - 12111:12111
+      rabbitmq:
+        image: rabbitmq:4.1-alpine
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 20
     env:
       PORT: 3000
       DATABASE_URL: postgresql://commerce:commerce@localhost:5432/commerce
       STRIPE_SECRET_KEY: sk_test_123
       STRIPE_API_URL: http://localhost:12111
       STRIPE_WEBHOOK_SECRET: whsec_test
+      RABBITMQ_URL: amqp://guest:guest@localhost:5672
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

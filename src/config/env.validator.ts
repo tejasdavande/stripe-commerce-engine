@@ -6,6 +6,7 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  Matches,
   Min,
   validateSync,
 } from 'class-validator';
@@ -28,6 +29,9 @@ class EnvironmentVariables {
   @IsOptional()
   @IsUrl({ require_tld: false, require_protocol: true, protocols: ['http', 'https'] })
   STRIPE_API_URL?: string;
+
+  @Matches(/^amqps?:\/\/\S+$/)
+  RABBITMQ_URL: string;
 
   @IsInt()
   @Min(1)
