@@ -100,3 +100,12 @@ model OutboxEvent {
   @@index([publishedAt, createdAt])
   @@map("outbox_events")
 }
+
+model ProcessedMessage {
+  consumer    String   @db.VarChar(100)
+  messageId   String   @map("message_id") @db.VarChar(255)
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@id([consumer, messageId])
+  @@map("processed_messages")
+}
