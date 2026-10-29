@@ -87,6 +87,17 @@ Delivery is at least once. A crash after the broker confirms but before the comm
 
 There's no auth in this service. It's meant to sit behind a gateway, and order ids are random UUIDs.
 
+## Order confirmations
+
+The service also consumes its own `order.paid` events, to send the buyer a confirmation (for now the mailer only logs it). The consumer declares its queues on startup:
+
+- `order-confirmations`, a quorum queue bound to `commerce.events` with `order.paid`, with a delivery limit of 5 and `commerce.dead-letter` as its dead-letter exchange.
+- `order-confirmations.dead-letter`, where messages end up once they can't be processed.
+
+Each message is handled in one transaction that inserts `(consumer, messageId)` into `processed_messages` and then sends the confirmation. A redelivered message hits the primary key and is acked without sending again, and a failed send rolls the row back so the retry can try again. A crash after the send but before the commit means one duplicate email, which beats a lost one.
+
+A message that isn't valid JSON, has no `messageId` or is missing the order fields goes straight to the dead-letter queue. Any other failure is requeued after 1s, 2s, 4s, 8s, then 16s, based on the broker's `x-delivery-count`. The consumer holds on to the message during the delay, so if the database goes down all 10 prefetch slots fill up and the consumer pauses instead of burning through its retries. After the sixth failed attempt the message is dead-lettered. If RabbitMQ is down at startup or the connection drops, the consumer logs once and reconnects every 5 seconds, and the API keeps serving requests the whole time. Every app instance runs a consumer, and they compete for messages on the same queue.
+
 ## Tech stack
 
 NestJS 11, TypeScript, PostgreSQL 16, Prisma 7 (with the `pg` driver adapter), Stripe, `@nestjs/schedule`, RabbitMQ 4 (`amqplib`), Docker.

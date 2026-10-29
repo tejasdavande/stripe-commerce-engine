@@ -1,10 +1,10 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ChannelModel, ConfirmChannel, connect } from 'amqplib';
+import { ChannelModel, ConfirmChannel } from 'amqplib';
+import { connectBroker } from './connect-broker';
 
 export const EVENTS_EXCHANGE = 'commerce.events';
 
-const CONNECT_TIMEOUT_MS = 5_000;
 const CONFIRM_TIMEOUT_MS = 10_000;
 
 export interface PublishableEvent {
@@ -61,13 +61,7 @@ export class EventPublisher implements OnModuleDestroy {
   }
 
   private async open(): Promise<ConfirmChannel> {
-    // a refused connection to a host with both ipv4 and ipv6 addresses is an AggregateError
-    // with an empty message, so fall back to its code
-    const connection = await connect(this.config.getOrThrow<string>('RABBITMQ_URL'), {
-      timeout: CONNECT_TIMEOUT_MS,
-    }).catch((error: NodeJS.ErrnoException) => {
-      throw new Error(`could not connect to rabbitmq: ${error.message || error.code}`);
-    });
+    const connection = await connectBroker(this.config.getOrThrow<string>('RABBITMQ_URL'));
     this.connection = connection;
 
     connection.on('error', (error: Error) => {
