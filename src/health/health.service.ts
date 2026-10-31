@@ -1,5 +1,6 @@
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { errorReason } from '../common/error-reason';
 
 export interface HealthStatus {
   status: 'ok';
@@ -16,7 +17,7 @@ export class HealthService {
     try {
       await this.prisma.$queryRaw`SELECT 1`;
     } catch (error) {
-      this.logger.warn(`postgres health check failed: ${(error as Error).message}`);
+      this.logger.warn(`postgres health check failed: ${errorReason(error)}`);
       throw new ServiceUnavailableException('postgres is not reachable');
     }
 

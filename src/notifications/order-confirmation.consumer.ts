@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Channel, ChannelModel, ConsumeMessage } from 'amqplib';
 import { connectBroker } from '../messaging/connect-broker';
 import { EVENTS_EXCHANGE } from '../messaging/event-publisher';
+import { errorReason } from '../common/error-reason';
 import { OrderConfirmationService } from './order-confirmation.service';
 import { parseOrderPaidMessage } from './order-paid.message';
 
@@ -142,9 +143,7 @@ export class OrderConfirmationConsumer implements OnApplicationBootstrap, OnModu
       }
 
       const redeliveries = Number(message.properties.headers?.['x-delivery-count'] ?? 0);
-      // prisma's pg adapter rethrows a refused connect as an AggregateError with an empty message
-      const { message: text, code } = error as NodeJS.ErrnoException;
-      const reason = text || code;
+      const reason = errorReason(error);
 
       if (redeliveries >= DELIVERY_LIMIT) {
         this.logger.error(

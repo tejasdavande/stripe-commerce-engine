@@ -12,6 +12,7 @@ import { PaymentService } from '../payments/payment.service';
 import { isUniqueViolation } from '../prisma/is-unique-violation';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductRepository } from '../products/product.repository';
+import { errorReason } from '../common/error-reason';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderLineDto } from './dto/order-line.dto';
 import { OrderResponseDto } from './dto/order-response.dto';
@@ -203,9 +204,7 @@ export class OrderService {
       try {
         await this.paymentService.cancelIntent(intent.id);
       } catch (error) {
-        this.logger.warn(
-          `could not cancel orphaned intent ${intent.id}: ${(error as Error).message}`
-        );
+        this.logger.warn(`could not cancel orphaned intent ${intent.id}: ${errorReason(error)}`);
       }
 
       throw new ConflictException('order is no longer awaiting payment');

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
+import { errorReason } from '../common/error-reason';
 import { OutboxRelayService } from './outbox-relay.service';
 
 @Injectable()
@@ -27,7 +28,7 @@ export class OutboxRelayJob {
     } catch (error) {
       if (!this.failing) {
         this.failing = true;
-        this.logger.warn(`outbox relay failed, retrying every second: ${(error as Error).message}`);
+        this.logger.warn(`outbox relay failed, retrying every second: ${errorReason(error)}`);
       }
     } finally {
       this.running = false;

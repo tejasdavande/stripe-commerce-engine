@@ -51,4 +51,14 @@ describe('OutboxRelayJob', () => {
       'outbox relay failed, retrying every second: channel closed'
     );
   });
+
+  it('logs the error code when postgres refuses the connection', async () => {
+    outboxRelayService.relayPending.mockRejectedValueOnce(
+      Object.assign(new AggregateError([], ''), { code: 'ECONNREFUSED' })
+    );
+
+    await job.run();
+
+    expect(warn).toHaveBeenCalledWith('outbox relay failed, retrying every second: ECONNREFUSED');
+  });
 });

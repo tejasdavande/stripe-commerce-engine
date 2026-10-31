@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { errorReason } from '../common/error-reason';
 import { OrderExpiryService } from './order-expiry.service';
 
 @Injectable()
@@ -20,7 +21,7 @@ export class OrderExpiryJob {
     try {
       await this.orderExpiryService.expireUnpaid();
     } catch (error) {
-      this.logger.error(`order expiry run failed: ${(error as Error).message}`);
+      this.logger.error(`order expiry run failed: ${errorReason(error)}`);
     } finally {
       this.running = false;
     }

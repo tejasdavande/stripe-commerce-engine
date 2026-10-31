@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PaymentService } from '../payments/payment.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { errorReason } from '../common/error-reason';
 import { OrderRepository, OrderWithItems } from './order.repository';
 import { OrderService } from './order.service';
 
@@ -36,7 +37,7 @@ export class OrderExpiryService {
           expired++;
         }
       } catch (error) {
-        this.logger.warn(`could not expire order ${order.id}: ${(error as Error).message}`);
+        this.logger.warn(`could not expire order ${order.id}: ${errorReason(error)}`);
       }
     }
 
