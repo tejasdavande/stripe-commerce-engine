@@ -132,7 +132,8 @@ describe('Order confirmation consumer (e2e)', () => {
     ]);
 
     expect(results.sort()).toEqual([false, true]);
-    expect(send).toHaveBeenCalledTimes(1);
+    // the consumer keeps handling other suites' order.paid messages while the spy is on
+    expect(send.mock.calls.filter(([sent]) => sent.orderId === order.orderId)).toHaveLength(1);
     send.mockRestore();
   });
 
