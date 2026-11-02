@@ -178,10 +178,14 @@ describe('Outbox relay (e2e)', () => {
 
     try {
       const relayed = app.get(OutboxRelayService).relayPending();
+      let timer!: NodeJS.Timeout;
       const outcome = await Promise.race([
         relayed.then(() => 'done'),
-        new Promise((resolve) => setTimeout(() => resolve('blocked'), 3_000)),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve('blocked'), 3_000);
+        }),
       ]);
+      clearTimeout(timer);
       expect(outcome).toBe('done');
 
       const rows = await prisma.outboxEvent.findMany({ where: { id: { in: ids } } });
