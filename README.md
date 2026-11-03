@@ -4,6 +4,30 @@ Payments and order microservice built with NestJS, PostgreSQL (Prisma) and Strip
 
 Work in progress: the project skeleton, Postgres via Prisma, the health check, a read-only product catalog, order creation with stock reservation and idempotency keys, a Stripe PaymentIntent per order, and signed, deduplicated Stripe webhooks that mark orders paid or cancel them and release their stock, a job that expires unpaid orders, and order events published to RabbitMQ through a transactional outbox are in.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    client([Client]) -->|POST /orders + Idempotency-Key| api[Nest API]
+    stripe([Stripe]) -->|signed webhooks| api
+    api -->|1. order, stock, outbox row in one tx| pg[(PostgreSQL)]
+    api -->|2. create PaymentIntent| stripe
+    cron[Expiry job, every 1 min] --> api
+    relay[Outbox relay, every 1s] -->|SKIP LOCKED, mark published| pg
+    relay -->|publisher confirms| mq{{RabbitMQ commerce.events}}
+    mq -->|order.paid| consumer[Order confirmation consumer]
+    consumer -->|processed_messages dedupe| pg
+    mq -.->|5 failed deliveries| dlq[(dead-letter queue)]
+```
+
+Everything runs in one Nest app, but the pieces only share Postgres and RabbitMQ, so the relay and the consumer can be split out later.
+
+- A status change and its outbox event commit in one transaction, so an event is never lost and never published for a change that rolled back.
+- Stripe is called after the order transaction commits, so no row locks are held during a network call. A failed call leaves a `pending_payment` order that heals when the client retries with the same key.
+- Webhooks and the relay are at least once. Every write that must not repeat is guarded by a primary key (`stripe_events`, `idempotency_keys`, `processed_messages`) or a conditional status update.
+
+Modules in `src/`: `products`, `orders` (checkout, state machine, expiry), `payments` (Stripe client), `webhooks`, `outbox`, `messaging` (publisher), `notifications` (consumer), `health`, `prisma`.
+
 ## Catalog
 
 Products live in Postgres with prices in the currency's smallest unit (`unitAmount: 2500` is $25.00), the same way Stripe takes them, so no float ever touches money. The API only reads the catalog. Products come from `npm run seed` for now, and the order flow will reserve stock against them.
