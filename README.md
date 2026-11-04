@@ -65,6 +65,8 @@ The intent is created after the order transaction commits, not inside it. Produc
 
 The trade-off is that Stripe can fail after the order exists. In that case `POST /orders` returns `502`, and the order stays `pending_payment` with its stock reserved but no intent. A retry with the same `Idempotency-Key` replays the order and creates the intent then. Each intent is created with the Stripe idempotency key `order-<order id>`, so two retries racing each other still get the same intent from Stripe. A replay of an order that already has an intent fetches its client secret again, and a replay of an order that's no longer awaiting payment returns no secret. `GET /orders/:id` never returns the secret.
 
+Keys are kept for 24 hours, like Stripe does. An hourly job deletes older ones in batches of 1000, and the orders stay. A retry with a key that old creates a new order instead of replaying.
+
 The SDK retries network errors twice and gives up after 10 seconds. Locally and in CI the app talks to [stripe-mock](https://github.com/stripe/stripe-mock) via `STRIPE_API_URL`, so no real keys are needed. To use Stripe test mode, set your own `sk_test_` key and remove `STRIPE_API_URL`.
 
 ## Webhooks

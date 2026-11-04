@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { OutboxModule } from '../outbox/outbox.module';
 import { PaymentModule } from '../payments/payment.module';
 import { ProductModule } from '../products/product.module';
+import { IdempotencyKeyCleanupJob } from './idempotency-key-cleanup.job';
+import { IdempotencyKeyCleanupService } from './idempotency-key-cleanup.service';
 import { IdempotencyKeyRepository } from './idempotency-key.repository';
 import { OrderExpiryJob } from './order-expiry.job';
 import { OrderExpiryService } from './order-expiry.service';
@@ -18,6 +20,8 @@ import { OrderService } from './order.service';
     OrderService,
     OrderExpiryService,
     OrderExpiryJob,
+    IdempotencyKeyCleanupService,
+    IdempotencyKeyCleanupJob,
   ],
   exports: [OrderService],
 })
