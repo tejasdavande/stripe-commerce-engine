@@ -4,6 +4,7 @@ import { PaymentService } from './payment.service';
 
 describe('PaymentService', () => {
   let paymentIntents: { create: jest.Mock; retrieve: jest.Mock; cancel: jest.Mock };
+  let refunds: { create: jest.Mock };
   let service: PaymentService;
 
   const request = {
@@ -19,7 +20,8 @@ describe('PaymentService', () => {
       retrieve: jest.fn().mockResolvedValue({ id: 'pi_1', client_secret: 'pi_1_secret_abc' }),
       cancel: jest.fn().mockResolvedValue({ id: 'pi_1', status: 'canceled' }),
     };
-    service = new PaymentService({ paymentIntents } as unknown as Stripe);
+    refunds = { create: jest.fn().mockResolvedValue({ id: 're_1' }) };
+    service = new PaymentService({ paymentIntents, refunds } as unknown as Stripe);
   });
 
   it('creates one intent per order, keyed on the order id', async () => {
@@ -78,6 +80,25 @@ describe('PaymentService', () => {
       );
 
       await expect(service.cancelIntent('pi_1')).rejects.toThrow(BadGatewayException);
+    });
+  });
+
+  describe('refund', () => {
+    it('refunds the whole payment once per intent', async () => {
+      await service.refund('pi_1');
+
+      expect(refunds.create).toHaveBeenCalledWith(
+        { payment_intent: 'pi_1' },
+        { idempotencyKey: 'refund-pi_1' }
+      );
+    });
+
+    it('turns stripe errors into 502', async () => {
+      refunds.create.mockRejectedValue(
+        new Stripe.errors.StripeConnectionError({ message: 'connect ECONNREFUSED' })
+      );
+
+      await expect(service.refund('pi_1')).rejects.toThrow(BadGatewayException);
     });
   });
 

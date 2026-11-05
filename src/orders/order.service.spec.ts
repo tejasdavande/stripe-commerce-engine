@@ -39,7 +39,7 @@ describe('OrderService', () => {
   >;
   let idempotencyKeyRepository: jest.Mocked<Pick<IdempotencyKeyRepository, 'create' | 'findByKey'>>;
   let paymentService: jest.Mocked<
-    Pick<PaymentService, 'createIntent' | 'getClientSecret' | 'cancelIntent'>
+    Pick<PaymentService, 'createIntent' | 'getClientSecret' | 'cancelIntent' | 'refund'>
   >;
   let outboxRepository: jest.Mocked<Pick<OutboxRepository, 'add'>>;
   let service: OrderService;
@@ -80,6 +80,7 @@ describe('OrderService', () => {
       createIntent: jest.fn().mockResolvedValue({ id: 'pi_new', clientSecret: 'pi_new_secret' }),
       getClientSecret: jest.fn().mockResolvedValue('pi_old_secret'),
       cancelIntent: jest.fn().mockResolvedValue(true),
+      refund: jest.fn().mockResolvedValue(undefined),
     };
     outboxRepository = { add: jest.fn().mockResolvedValue(undefined) };
     const prisma = {
@@ -429,7 +430,6 @@ describe('OrderService', () => {
     it.each([
       ['an unknown intent', null, payment],
       ['an already paid order', withStatus(OrderStatus.paid), payment],
-      ['a cancelled order', withStatus(OrderStatus.cancelled), payment],
       ['a different amount', withStatus(OrderStatus.pending_payment), { ...payment, amount: 999 }],
       [
         'a different currency',
@@ -443,6 +443,33 @@ describe('OrderService', () => {
 
       expect(orderRepository.transition).not.toHaveBeenCalled();
       expect(outboxRepository.add).not.toHaveBeenCalled();
+    });
+
+    it('refunds a payment that lands on a cancelled order', async () => {
+      orderRepository.findByPaymentIntent.mockResolvedValue(withStatus(OrderStatus.cancelled));
+
+      await service.markPaid(payment, tx as unknown as Prisma.TransactionClient);
+
+      expect(paymentService.refund).toHaveBeenCalledWith('pi_1');
+      expect(orderRepository.transition).not.toHaveBeenCalled();
+      expect(outboxRepository.add).not.toHaveBeenCalled();
+    });
+
+    it('does not refund a payment for any other reason', async () => {
+      orderRepository.findByPaymentIntent.mockResolvedValue(withStatus(OrderStatus.paid));
+
+      await service.markPaid(payment, tx as unknown as Prisma.TransactionClient);
+
+      expect(paymentService.refund).not.toHaveBeenCalled();
+    });
+
+    it('lets a failed refund through so the event is retried', async () => {
+      orderRepository.findByPaymentIntent.mockResolvedValue(withStatus(OrderStatus.cancelled));
+      paymentService.refund.mockRejectedValue(new BadGatewayException());
+
+      await expect(
+        service.markPaid(payment, tx as unknown as Prisma.TransactionClient)
+      ).rejects.toThrow(BadGatewayException);
     });
 
     it('throws 409 when the status changed underneath, so the event is retried', async () => {

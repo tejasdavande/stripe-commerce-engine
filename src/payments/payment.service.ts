@@ -68,6 +68,15 @@ export class PaymentService {
     });
   }
 
+  async refund(paymentIntentId: string): Promise<void> {
+    await this.call(() =>
+      this.stripe.refunds.create(
+        { payment_intent: paymentIntentId },
+        { idempotencyKey: `refund-${paymentIntentId}` }
+      )
+    );
+  }
+
   private async call<T>(request: () => Promise<T>): Promise<T> {
     try {
       return await request();

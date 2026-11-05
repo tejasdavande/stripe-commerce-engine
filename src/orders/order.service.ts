@@ -98,6 +98,14 @@ export class OrderService {
       return;
     }
 
+    if (order.status === OrderStatus.cancelled) {
+      this.logger.warn(
+        `order ${order.id} was cancelled but intent ${paymentIntentId} succeeded, refunding`
+      );
+      await this.paymentService.refund(paymentIntentId);
+      return;
+    }
+
     if (order.totalAmount !== amount || order.currency !== currency) {
       this.logger.error(
         `order ${order.id} expected ${order.totalAmount} ${order.currency} but intent ${paymentIntentId} received ${amount} ${currency}`
@@ -137,7 +145,6 @@ export class OrderService {
 
   // returns whether this call moved the order. a webhook can't fix an illegal transition by
   // retrying, so it's logged and acknowledged.
-  // TODO: a payment that lands on a cancelled order needs a refund
   private async transition(
     order: OrderWithItems,
     to: OrderStatus,

@@ -1,9 +1,10 @@
-import { INestApplication } from '@nestjs/common';
+import { BadGatewayException, INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { randomUUID } from 'crypto';
 import Stripe from 'stripe';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { PaymentService } from '../src/payments/payment.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { ProductRepository } from '../src/products/product.repository';
 import { setupApp } from '../src/setup-app';
@@ -198,13 +199,35 @@ describe('Stripe webhooks (e2e)', () => {
     expect(await statusOf(order.id)).toBe('paid');
   });
 
-  it('does not revive a cancelled order', async () => {
+  it('refunds a payment that lands on a cancelled order and does not revive it', async () => {
+    const refund = jest.spyOn(app.get(PaymentService), 'refund');
     const order = await createOrder();
     await prisma.order.update({ where: { id: order.id }, data: { status: 'cancelled' } });
 
     await deliver(paidEvent(order)).expect(200);
 
     expect(await statusOf(order.id)).toBe('cancelled');
+    expect(refund).toHaveBeenCalledWith(order.paymentIntentId);
+    expect(await outboxTypes(order.id)).toEqual([]);
+    refund.mockRestore();
+  });
+
+  it('retries the event when the refund fails, then refunds once it works', async () => {
+    const paymentService = app.get(PaymentService);
+    const refund = jest
+      .spyOn(paymentService, 'refund')
+      .mockRejectedValueOnce(new BadGatewayException('payment provider request failed'));
+    const order = await createOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { status: 'cancelled' } });
+    const event = paidEvent(order);
+
+    await deliver(event).expect(502);
+    await deliver(event).expect(200);
+
+    const calls = refund.mock.calls.filter(([id]) => id === order.paymentIntentId);
+    expect(calls).toHaveLength(2);
+    expect(await prisma.stripeEvent.count({ where: { id: event.id } })).toBe(1);
+    refund.mockRestore();
   });
 
   it('cancels the order and puts its stock back when the intent is canceled', async () => {
